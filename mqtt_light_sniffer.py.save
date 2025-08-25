@@ -1,0 +1,6 @@
+k)
+client.tls_insecure_set(True)
+
+print("[*] Připojuji se k brokeru...")
+client.connect(BROKER, PORT, keepalive=300)
+client.loop_forever()

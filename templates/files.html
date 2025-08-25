@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8" />
+<title>Správce souborů</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+<style>
+  body { display: flex; height: 100vh; margin: 0; font-family: Arial,sans-serif; }
+  #sidebar { width: 300px; background-color: #f8f9fa; overflow-y: auto; border-right: 1px solid #ddd; }
+  #sidebar .folder { padding: 8px 16px; cursor: pointer; display:flex; justify-content:space-between; align-items:center; }
+  #sidebar .folder.active { background-color: #0d6efd; color: white; font-weight: bold; }
+  #main { flex: 1; padding: 20px; overflow-y: auto; }
+  .file-row { display: flex; justify-content: space-between; padding: 6px; border-bottom: 1px solid #eaeaea; align-items: center; }
+  .file-row:hover { background: #f1f3f5; }
+  .file-name-note { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .badge { font-size: 0.85em; white-space: normal; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+  .file-thumb { max-width: 55px; max-height: 55px; object-fit: contain; margin-right: 8px; }
+  #metadataDisplay img { max-width: 100px; transition: transform 0.3s ease; cursor: pointer; display: block; margin-bottom: 10px; }
+  #metadataDisplay img:hover { transform: scale(2); position: relative; z-index: 10; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div class="d-flex align-items-center justify-content-between p-3 border-bottom">
+    <h5 class="mb-0">Složky</h5>
+    <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm" style="font-size:0.9em;">← Zpět</a>
+  </div>
+  <div id="folderTree"></div>
+  <div class="p-3">
+    <input type="text" id="newFolderName" class="form-control mb-2" placeholder="Nová složka" />
+    <button class="btn btn-primary w-100" onclick="createFolder()">Vytvořit složku</button>
+  </div>
+</div>
+
+<div id="main" class="p-3">
+  <div class="mb-3">
+    <label><strong>Využití disku:</strong> <span id="diskUsagePercent">0%</span></label>
+    <div class="progress">
+      <div id="diskUsageBar" class="progress-bar bg-success" style="width: 0%;"></div>
+    </div>
+  </div>
+
+  <div class="mb-3 d-flex align-items-center gap-2">
+    <input type="file" id="fileInput" class="form-control" />
+    <button class="btn btn-success" onclick="uploadFile()">Nahrát</button>
+  </div>
+
+  <input type="text" id="searchQuery" class="form-control mb-3" placeholder="Hledat soubor" oninput="filterFiles()" />
+
+  <div id="fileList"></div>
+
+  <hr />
+
+  <div id="metadataDisplay" class="mt-3"></div>
+</div>
+
+<script>
+  let currentFolder = 'hlavni_slozka';
+  let draggedFile = null;
+  let fileNotes = {};
+
+  async function fetchFolderTree() {
+    const res = await fetch('/all_folders/');
+    const data = await res.json();
+    const tree = document.getElementById('folderTree');
+    tree.innerHTML = '';
+    data.folders.forEach(folder => {
+      if(folder === 'thumbnails') return;
+      const div = document.createElement('div');
+      div.className = 'folder' + (folder === currentFolder ? ' active' : '');
+      div.innerHTML = `<span>${folder || '/'}</span><span></span>`;
+      if(folder && folder !== 'hlavni_slozka') {
+        let btns = document.createElement('span');
+        let renameBtn = document.createElement('button');
+        renameBtn.className = "btn btn-sm btn-outline-secondary";
+        renameBtn.textContent = '✏';
+        renameBtn.onclick = e => { e.stopPropagation(); renameFolderPrompt(folder); };
+        btns.appendChild(renameBtn);
+        let delBtn = document.createElement('button');
+        delBtn.className = "btn btn-sm btn-outline-danger ms-1";
+        delBtn.textContent = '🗑';
+        delBtn.onclick = e => { e.stopPropagation(); deleteFolder(folder); };
+        btns.appendChild(delBtn);
+        div.lastElementChild.replaceWith(btns);
+      }
+      div.onclick = () => fetchFiles(folder);
+      div.ondragover = e => e.preventDefault();
+      div.ondrop = e => onDrop(e, folder);
+      tree.appendChild(div);
+    });
+  }
+
+  async function fetchFiles(folder = currentFolder) {
+    const url = folder ? `/files_in_folder/?foldername=${encodeURIComponent(folder)}` : '/files/';
+    const res = await fetch(url);
+    if(!res.ok) { alert("Nelze načíst obsah složky."); return; }
+    const data = await res.json();
+    currentFolder = folder;
+    await fetchNotes(data.files, folder);
+    await updateFileList(data.files);
+    await fetchFolderTree();
+    clearMetadata();
+  }
+
+  async function fetchNotes(files, folder) {
+    fileNotes = {};
+    for(const file of files) {
+      const path = folder ? folder + '/' + file : file;
+      const res = await fetch(`/get_note/?file_path=${encodeURIComponent(path)}`);
+      if(res.ok){
+        const data = await res.json();
+        fileNotes[path] = data.note || '';
+      }
+    }
+  }
+
+  async function updateFileList(files) {
+    const list = document.getElementById('fileList');
+    list.innerHTML = '';
+    for(const file of files) {
+      const fullPath = currentFolder ? currentFolder + '/' + file : file;
+      let imgTag = '';
+      try {
+        const metaRes = await fetch(`/file_metadata/?file_path=${encodeURIComponent(fullPath)}`);
+        if(metaRes.ok) {
+          const metaData = await metaRes.json();
+          if(metaData.thumbnail_files && metaData.thumbnail_files.length) {
+            imgTag = `<img src="${metaData.thumbnail_files[0]}" class="file-thumb" alt="miniatura">`;
+          } else if(metaData.thumbnail_url) {
+            imgTag = `<img src="${metaData.thumbnail_url}" class="file-thumb" alt="miniatura">`;
+          }
+        }
+      } catch {}
+      const noteBadge = fileNotes[fullPath]
+          ? `<span class="badge bg-info ms-2">${fileNotes[fullPath]}</span>`
+          : '';
+      const row = document.createElement('div');
+      row.className = 'file-row';
+      row.draggable = true;
+      row.ondragstart = e => { draggedFile = fullPath; };
+      row.innerHTML = `
+        <span class="file-name-note">${imgTag}${file}${noteBadge}</span>
+        <span>
+          <a href="/download/${encodeURIComponent(fullPath)}" class="btn btn-sm btn-primary me-1">Stáhnout</a>
+          <button class="btn btn-sm btn-secondary me-1" onclick="renameFilePrompt('${fullPath}')">Přejmenovat</button>
+          <button class="btn btn-sm btn-info me-1" onclick="notePrompt('${fullPath}')">Poznámka</button>
+          <button class="btn btn-sm btn-danger me-1" onclick="deleteFile('${fullPath}')">Smazat</button>
+          <button class="btn btn-sm btn-warning" onclick="showMetadata('${fullPath}')">Metadata</button>
+        </span>
+      `;
+      list.appendChild(row);
+    }
+    clearMetadata();
+  }
+
+  async function uploadFile() {
+    const input = document.getElementById('fileInput');
+    if(!input.files.length) {
+      alert('Vyberte soubor');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+    formData.append('path', currentFolder);
+    await fetch('/upload/', { method:'POST', body: formData });
+    fetchFiles(currentFolder);
+  }
+
+  async function createFolder() {
+    const input = document.getElementById('newFolderName');
+    const folderName = input.value.trim();
+    if(!folderName) return;
+    const formData = new FormData();
+    let fullPath = folderName;
+    if(currentFolder && currentFolder !== '') fullPath = currentFolder + '/' + folderName;
+    formData.append('foldername', fullPath);
+    await fetch('/folders/', { method:'POST', body: formData });
+    input.value = '';
+    fetchFolderTree();
+    fetchFiles(currentFolder);
+  }
+
+  async function deleteFolder(folder) {
+    if(!confirm(`Opravdu smazat celou složku "${folder}" ?`)) return;
+    const formData = new FormData();
+    formData.append('foldername', folder);
+    await fetch('/delete_folder/', { method:'POST', body: formData });
+    fetchFolderTree();
+    fetchFiles(currentFolder);
+  }
+
+  async function renameFolderPrompt(folder) {
+    let newName = prompt("Zadejte nový název složky:", folder.split('/').pop());
+    if(!newName) return;
+    const formData = new FormData();
+    formData.append('source', folder);
+    formData.append('target', newName);
+    await fetch('/rename_folder/', { method:'POST', body: formData });
+    fetchFolderTree();
+    fetchFiles(currentFolder);
+  }
+
+  async function renameFilePrompt(file) {
+    let base = file.split('/').pop();
+    let dotIndex = base.lastIndexOf('.');
+    let nameOnly = dotIndex > -1 ? base.substring(0,dotIndex) : base;
+    let ext = dotIndex > -1 ? base.substring(dotIndex) : "";
+    let newName = prompt("Zadejte nový název souboru:", nameOnly);
+    if(!newName) return;
+    newName += ext;
+    const formData = new FormData();
+    formData.append('old_name', file);
+    formData.append('new_name', newName);
+    await fetch('/rename_file/', { method:'POST', body: formData });
+    fetchFiles(currentFolder);
+  }
+
+  async function notePrompt(file) {
+    let note = fileNotes[file] || '';
+    let newNote = prompt("Poznámka k souboru:", note);
+    if(newNote === null) return;
+    const formData = new FormData();
+    formData.append('file_path', file);
+    formData.append('note', newNote);
+    await fetch('/save_note/', { method:'POST', body: formData });
+    fetchFiles(currentFolder);
+  }
+
+  async function deleteFile(file) {
+    if(!confirm('Opravdu smazat tento soubor?')) return;
+    const formData = new FormData();
+    formData.append('filename', file);
+    const res = await fetch('/delete_file/', { method:'POST', body: formData });
+    if(!res.ok) {
+      alert('Chyba při mazání souboru');
+      return;
+    }
+    const data = await res.json();
+    if(data.error) {
+      alert("Chyba: " + data.error);
+    } else {
+      fetchFiles(currentFolder);
+    }
+  }
+
+  function filterFiles() {
+    let query = document.getElementById('searchQuery').value.toLowerCase();
+    document.querySelectorAll('#fileList .file-row').forEach(row => {
+      let text = row.textContent.toLowerCase();
+      row.style.display = text.includes(query) ? '' : 'none';
+    });
+  }
+
+  async function showMetadata(file) {
+    try {
+      const res = await fetch(`/file_metadata/?file_path=${encodeURIComponent(file)}`);
+      if(!res.ok) throw new Error('Chyba při načítání metadat');
+      const data = await res.json();
+      const container = document.getElementById('metadataDisplay');
+      container.innerHTML = '';
+      if(data.thumbnail_files && data.thumbnail_files.length > 0) {
+        data.thumbnail_files.forEach(src => {
+          let img = document.createElement('img');
+          img.src = src;
+          container.appendChild(img);
+        });
+      } else if(data.thumbnail_url) {
+        let img = document.createElement('img');
+        img.src = data.thumbnail_url;
+        container.appendChild(img);
+      }
+      if(data.file_size_kb) container.innerHTML += `<div><strong>Velikost souboru:</strong> ${data.file_size_kb} kB</div>`;
+      if(data.modified) container.innerHTML += `<div><strong>Upraveno:</strong> ${data.modified}</div>`;
+      if(data.print_time) container.innerHTML += `<div><strong>Čas tisku:</strong> ${data.print_time}</div>`;
+      if(data.material) container.innerHTML += `<div><strong>Materiál:</strong> ${data.material}</div>`;
+      if(data.build_plate) container.innerHTML += `<div><strong>Podložka:</strong> ${data.build_plate}</div>`;
+      if(data.layers) container.innerHTML += `<div><strong>Počet vrstev:</strong> ${data.layers}</div>`;
+      if(data.filament_length) container.innerHTML += `<div><strong>Délka filamentu:</strong> ${data.filament_length} mm</div>`;
+      if(data.weight) container.innerHTML += `<div><strong>Váha:</strong> ${data.weight} g</div>`;
+      if(data.printer_model) container.innerHTML += `<div><strong>Model tiskárny:</strong> ${data.printer_model}</div>`;
+    } catch(e) {
+      alert(e.message);
+    }
+  }
+
+  function clearMetadata() {
+    document.getElementById('metadataDisplay').innerHTML = '';
+  }
+
+  async function updateDiskUsage() {
+    try {
+      const res = await fetch('/disk_usage/');
+      if(res.ok) {
+        const data = await res.json();
+        let percent = data.disk_usage_percent;
+        const bar = document.getElementById('diskUsageBar');
+        const label = document.getElementById('diskUsagePercent');
+        bar.style.width = percent + '%';
+        label.textContent = percent + '%';
+        bar.setAttribute('aria-valuenow', percent);
+        if(percent > 90) {
+          bar.classList.add('bg-danger');
+          bar.classList.remove('bg-success');
+        } else {
+          bar.classList.add('bg-success');
+          bar.classList.remove('bg-danger');
+        }
+      }
+    } catch(err) { console.error('Disk usage error:', err); }
+  }
+
+  window.onload = () => {
+    fetchFolderTree();
+    fetchFiles(currentFolder);
+    updateDiskUsage();
+  };
+</script>
+
+</body>
+</html>

@@ -1,0 +1,19 @@
+<form action="{{ url_for('printer_update', pid=printer.id) }}" method="post" class="space-y-4">
+    <div>
+        <label class="block font-semibold">Název</label>
+        <input type="text" name="name" value="{{ printer.name }}" class="border p-2 rounded w-full">
+    </div>
+    <div>
+        <label class="block font-semibold">IP adresa</label>
+        <input type="text" name="ip" value="{{ printer.ip }}" class="border p-2 rounded w-full">
+    </div>
+    <div>
+        <label class="block font-semibold">Access code</label>
+        <input type="text" name="access_code" value="{{ printer.access_code }}" class="border p-2 rounded w-full">
+    </div>
+    <div>
+        <label class="block font-semibold">Sériové číslo</label>
+        <input type="text" name="serial" value="{{ printer.serial }}" class="border p-2 rounded w-full">
+    </div>
+    <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded">Uložit</button>
+</form>
