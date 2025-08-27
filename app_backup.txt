@@ -1,0 +1,425 @@
+import os
+import shutil
+import datetime
+from flask import Flask, render_template, request, redirect, url_for, jsonify, send_from_directory, abort
+from printers import load_printers, save_printers
+import mqtt_client
+import psutil
+
+app = Flask(__name__)
+
+IMAGE_DIR = os.path.join(os.path.dirname(__file__), 'static', 'printers')
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
+UPLOAD_DIR = os.path.expanduser("~/printserver/files")
+THUMBNAILS_DIR = os.path.join(UPLOAD_DIR, "thumbnails")
+HLAVNI_SLOZKA = os.path.join(UPLOAD_DIR, "hlavni_slozka")
+os.makedirs(HLAVNI_SLOZKA, exist_ok=True)
+os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+
+def parse_gcode_metadata(filepath):
+    print_time = None
+    layers = None
+    filament_mm = None
+    material = None
+    weight = None
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()[-1000:]
+            for line in lines:
+                line = line.strip()
+                if "estimated printing time" in line or "TIME:" in line:
+                    try:
+                        if "TIME:" in line:
+                            seconds = int(line.split("TIME:")[1].strip())
+                            h = seconds // 3600
+                            m = (seconds % 3600) // 60
+                            s = seconds % 60
+                            print_time = f"{h}h {m}m {s}s"
+                        else:
+                            t = line.split('=')[1] if '=' in line else line.split(':')[1]
+                            print_time = t.strip()
+                    except:
+                        pass
+                if "layer_count" in line or "LAYER_COUNT:" in line:
+                    try:
+                        if "LAYER_COUNT:" in line:
+                            layers = int(line.split("LAYER_COUNT:")[1].strip())
+                        else:
+                            layers = int(line.split('=')[1].strip())
+                    except:
+                        pass
+                if "filament_used" in line or "FILAMENT_USED:" in line:
+                    try:
+                        if "FILAMENT_USED:" in line:
+                            filament_mm = float(line.split("FILAMENT_USED:")[1].strip())
+                        else:
+                            filament_mm = float(line.split('=')[1].replace('mm','').strip())
+                    except:
+                        pass
+                if "filament_type" in line or "MATERIAL:" in line:
+                    material = line.split('=')[1].strip() if '=' in line else line.split(':')[1].strip()
+                if "filament_weight" in line or "FILAMENT_WEIGHT:" in line:
+                    try:
+                        weight = float(line.split(':')[1].replace('g','').strip())
+                    except:
+                        pass
+    except Exception:
+        pass
+    return print_time, layers, filament_mm, material, weight
+
+@app.route('/')
+def index():
+    printers = load_printers()
+    for printer in printers:
+        printer["status"] = mqtt_client.check_status(printer["ip"], printer["access_code"])
+    save_printers(printers)
+    return render_template('index.html', printers=printers)
+
+@app.route('/printer/add', methods=['POST'])
+def add_printer():
+    printers = load_printers()
+    max_id = max([p["id"] for p in printers], default=0)
+    new_printer = {
+        "id": max_id + 1,
+        "name": request.form.get("name", ""),
+        "ip": request.form.get("ip", ""),
+        "access_code": request.form.get("access_code", ""),
+        "serial": request.form.get("serial", ""),
+        "img": request.form.get("img", "default.png"),
+    }
+    printers.append(new_printer)
+    save_printers(printers)
+    return redirect(url_for('index'))
+
+@app.route('/printer/<int:pid>')
+def printer_detail(pid):
+    printers = load_printers()
+    printer = next((p for p in printers if p["id"] == pid), None)
+    if not printer:
+        return "Tiskárna nenalezena", 404
+    return render_template('printer_detail.html', printer=printer)
+
+@app.route('/printer/<int:pid>/update', methods=['POST'])
+def printer_update(pid):
+    printers = load_printers()
+    for p in printers:
+        if p["id"] == pid:
+            p["name"] = request.form.get("name", p["name"])
+            p["ip"] = request.form.get("ip", p["ip"])
+            p["access_code"] = request.form.get("access_code", p["access_code"])
+            p["serial"] = request.form.get("serial", p["serial"])
+    save_printers(printers)
+    return redirect(url_for('printer_detail', pid=pid))
+
+@app.route('/printer/<int:pid>/cmd/<cmd>')
+def printer_command(pid, cmd):
+    # TODO: implementovat ovládání tiskárny
+    return redirect(url_for('printer_detail', pid=pid))
+
+@app.route('/printer/<int:pid>/upload_image', methods=['POST'])
+def upload_printer_image(pid):
+    printers = load_printers()
+    printer = next((p for p in printers if p["id"] == pid), None)
+    if not printer:
+        return "Tiskárna nenalezena", 404
+    if 'image' not in request.files:
+        return redirect(url_for('printer_detail', pid=pid))
+    file = request.files['image']
+    if file.filename == '':
+        return redirect(url_for('printer_detail', pid=pid))
+    extension = os.path.splitext(file.filename)[1]
+    filename = f"printer_{pid}{extension}"
+    filepath = os.path.join(IMAGE_DIR, filename)
+    file.save(filepath)
+    printer['img'] = filename
+    save_printers(printers)
+    return redirect(url_for('printer_detail', pid=pid))
+
+@app.route('/printer/<int:pid>/delete_image', methods=['POST'])
+def delete_printer_image(pid):
+    printers = load_printers()
+    printer = next((p for p in printers if p["id"] == pid), None)
+    if not printer:
+        return "Tiskárna nenalezena", 404
+    img = printer.get('img')
+    if img and img != 'default.png':
+        img_path = os.path.join(IMAGE_DIR, img)
+        if os.path.exists(img_path):
+            os.remove(img_path)
+        printer['img'] = 'default.png'
+        save_printers(printers)
+    return redirect(url_for('printer_detail', pid=pid))
+
+@app.route('/printer/<int:pid>/delete', methods=['POST'])
+def delete_printer(pid):
+    printers = load_printers()
+    printer_to_delete = next((p for p in printers if p["id"] == pid), None)
+    if not printer_to_delete:
+        return "Tiskárna nenalezena", 404
+    img = printer_to_delete.get('img')
+    if img and img != 'default.png':
+        img_path = os.path.join(IMAGE_DIR, img)
+        if os.path.exists(img_path):
+            os.remove(img_path)
+    printers = [p for p in printers if p["id"] != pid]
+    save_printers(printers)
+    return redirect(url_for('index'))
+
+@app.route('/files/')
+def list_root_files():
+    return render_template('files.html')
+
+@app.route('/all_folders/')
+def all_folders():
+    folders = []
+    for root, dirs, _ in os.walk(UPLOAD_DIR):
+        for d in dirs:
+            rel = os.path.relpath(os.path.join(root, d), UPLOAD_DIR)
+            if rel == "thumbnails" or rel.startswith("thumbnails/"):
+                continue
+            folders.append("" if rel == "." else rel)
+    folders = [f for f in folders if f != "thumbnails"]
+    sorted_list = []
+    if "hlavni_slozka" in folders:
+        sorted_list.append("hlavni_slozka")
+    sorted_list += sorted([f for f in folders if f != "hlavni_slozka"])
+    return jsonify(folders=sorted_list)
+
+@app.route('/files_in_folder/')
+def files_in_folder():
+    foldername = request.args.get('foldername', '')
+    folder_path = os.path.join(UPLOAD_DIR, foldername)
+    if not os.path.isdir(folder_path):
+        return jsonify(files=[])
+    files = [
+        f for f in os.listdir(folder_path)
+        if os.path.isfile(os.path.join(folder_path, f)) and not f.endswith('.note')
+    ]
+    return jsonify(files=files)
+
+@app.route('/download/<path:filepath>')
+def download(filepath):
+    file_path = os.path.join(UPLOAD_DIR, filepath)
+    if not os.path.isfile(file_path):
+        abort(404)
+    return send_from_directory(UPLOAD_DIR, filepath, as_attachment=True)
+
+@app.route('/upload/', methods=['POST'])
+def upload():
+    path = request.form.get('path', '')
+    target_dir = os.path.join(UPLOAD_DIR, path) if path else UPLOAD_DIR
+    os.makedirs(target_dir, exist_ok=True)
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        return jsonify(error="Neplatný soubor"), 400
+    file_dest = os.path.join(target_dir, file.filename)
+    file.save(file_dest)
+    return jsonify(message="Soubor nahrán")
+
+@app.route('/folders/', methods=['POST'])
+def create_folder():
+    foldername = request.form.get('foldername')
+    if not foldername:
+        return jsonify(error="Chybí název složky"), 400
+    os.makedirs(os.path.join(UPLOAD_DIR, foldername), exist_ok=True)
+    return jsonify(message="Složka vytvořena")
+
+@app.route('/delete_folder/', methods=['POST'])
+def delete_folder():
+    foldername = request.form.get('foldername')
+    path = os.path.join(UPLOAD_DIR, foldername)
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+        return jsonify(message="Složka smazána")
+    return jsonify(error="Složka neexistuje"), 404
+
+@app.route('/rename_folder/', methods=['POST'])
+def rename_folder():
+    source = request.form.get('source')
+    target = request.form.get('target')
+    if not source or not target:
+        return jsonify(error="Chybí data"), 400
+    src = os.path.join(UPLOAD_DIR, source)
+    tgt = os.path.join(UPLOAD_DIR, os.path.dirname(source), target)
+    if os.path.isdir(src):
+        os.rename(src, tgt)
+        return jsonify(message="Složka přejmenována")
+    return jsonify(error="Složka neexistuje"), 404
+
+@app.route('/move/', methods=['POST'])
+def move_file():
+    filename = request.form.get('filename')
+    target_folder = request.form.get('target_folder')
+    src = os.path.join(UPLOAD_DIR, filename)
+    dest_dir = os.path.join(UPLOAD_DIR, target_folder)
+    if not os.path.exists(src):
+        return jsonify(error="Soubor neexistuje"), 404
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.move(src, os.path.join(dest_dir, os.path.basename(filename)))
+    note_src = src + ".note"
+    note_dst = os.path.join(dest_dir, os.path.basename(filename)) + ".note"
+    if os.path.exists(note_src):
+        shutil.move(note_src, note_dst)
+    return jsonify(message="Soubor přesunut")
+
+@app.route('/rename_file/', methods=['POST'])
+def rename_file():
+    old_name = request.form.get('old_name')
+    new_name = request.form.get('new_name')
+    src = os.path.join(UPLOAD_DIR, old_name)
+    dst = os.path.join(os.path.dirname(src), new_name)
+    if not os.path.exists(src):
+        return jsonify(error="Soubor neexistuje"), 404
+    os.rename(src, dst)
+    note_src = src + ".note"
+    note_dst = dst + ".note"
+    if os.path.exists(note_src):
+        os.rename(note_src, note_dst)
+    return jsonify(message="Soubor přejmenován")
+
+@app.route('/save_note/', methods=['POST'])
+def save_note():
+    file_path = request.form.get('file_path')
+    note = request.form.get('note')
+    note_path = os.path.join(UPLOAD_DIR, file_path) + ".note"
+    os.makedirs(os.path.dirname(note_path), exist_ok=True)
+    with open(note_path, "w", encoding="utf-8") as f:
+        f.write(note)
+    return jsonify(message="Poznámka uložena")
+
+@app.route('/get_note/')
+def get_note():
+    file_path = request.args.get('file_path')
+    note_path = os.path.join(UPLOAD_DIR, file_path) + ".note"
+    if os.path.exists(note_path):
+        with open(note_path, encoding="utf-8") as f:
+            return jsonify(note=f.read())
+    return jsonify(note="")
+
+@app.route('/delete_file/', methods=['POST'])
+def delete_file():
+    filename = request.form.get('filename')
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.isfile(file_path):
+        os.remove(file_path)
+        note_path = file_path + ".note"
+        if os.path.exists(note_path):
+            os.remove(note_path)
+        return jsonify(message="Soubor smazán")
+    return jsonify(error="Soubor neexistuje"), 404
+
+@app.route('/disk_usage/')
+def disk_usage():
+    usage = psutil.disk_usage('.').percent
+    return jsonify(disk_usage_percent=usage)
+
+@app.route('/file_metadata/')
+def file_metadata():
+    file_path = request.args.get('file_path')
+    abs_path = os.path.join(UPLOAD_DIR, file_path)
+    if not os.path.isfile(abs_path):
+        return jsonify(error="Soubor nenalezen"), 404
+
+    base_name = os.path.splitext(os.path.basename(abs_path))[0]
+    thumb_dir = THUMBNAILS_DIR
+    thumbnail_urls = []
+    if os.path.isdir(thumb_dir):
+        for thumb_file in os.listdir(thumb_dir):
+            if base_name in thumb_file:
+                url_path = thumb_file.replace("\\", "/")
+                thumbnail_urls.append(f"/thumbnails/{url_path}")
+
+    file_stat = os.stat(abs_path)
+    size_kb = round(file_stat.st_size / 1024, 2)
+    modified = datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+
+    print_time = None
+    layers = None
+    filament_length = None
+    material = None
+    weight = None
+    if abs_path.lower().endswith('.gcode') or '.gcode.' in abs_path.lower():
+        print_time, layers, filament_length, material, weight = parse_gcode_metadata(abs_path)
+
+    return jsonify({
+        "print_time": print_time,
+        "material": material,
+        "build_plate": None,
+        "layers": layers,
+        "filament_length": filament_length,
+        "weight": weight,
+        "printer_model": None,
+        "thumbnail_files": thumbnail_urls,
+        "file_size_kb": size_kb,
+        "modified": modified,
+    })
+
+@app.route('/thumbnails/<path:filename>')
+def serve_thumbnail(filename):
+    return send_from_directory(THUMBNAILS_DIR, filename)
+
+
+
+@app.route("/upload_page/")
+def upload_page():
+    return render_template("upload.html")
+
+
+@app.route("/upload/", methods=["POST"])
+def upload_files():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    files = request.files.getlist("file")
+    target_folder = request.form.get("path", "")
+    target_dir = os.path.join(UPLOAD_DIR, target_folder) if target_folder else UPLOAD_DIR
+    os.makedirs(target_dir, exist_ok=True)
+
+    upload_results = []
+    for file in files:
+        if file.filename == "":
+            continue
+        file_dest = os.path.join(target_dir, file.filename)
+        file.save(file_dest)
+        upload_results.append(file.filename)
+    return jsonify({"message": "Nahrávání dokončeno", "files": upload_results})
+
+
+def parse_sliceinfo_config_xml(xml_content: str) -> dict:
+    # (můžeš použít stávající funkci přesně, kterou máme)
+
+def parse_3mf_multiplate(file_path):
+    # (stejně jako dosud, tato funkce extrahuje z 3MF plate, thumbnail a metadata)
+
+@app.route("/file_metadata/")
+def file_metadata():
+    file_path = request.args.get("file_path")
+    abs_path = os.path.join(UPLOAD_DIR, file_path)
+    if not os.path.isfile(abs_path):
+        return jsonify(error="Soubor nenalezen"), 404
+    
+    if file_path.lower().endswith(".3mf"):
+        plates = parse_3mf_multiplate(abs_path)
+        return jsonify({"plates": plates})
+    else:
+        meta = parse_gcode_metadata(abs_path)
+        # zbytek stávajícího endpointu zpracování
+        ...
+
+@app.route('/thumbnails/<path:filename>')
+def serve_thumbnail(filename):
+    return send_from_directory(THUMBNAILS_DIR, filename)
+
+
+
+
+
+
+
+
+
+
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=True)

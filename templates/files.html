@@ -10,13 +10,49 @@
   #sidebar .folder { padding: 8px 16px; cursor: pointer; display:flex; justify-content:space-between; align-items:center; }
   #sidebar .folder.active { background-color: #0d6efd; color: white; font-weight: bold; }
   #main { flex: 1; padding: 20px; overflow-y: auto; }
-  .file-row { display: flex; justify-content: space-between; padding: 6px; border-bottom: 1px solid #eaeaea; align-items: center; }
+  .file-row { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eaeaea; align-items: center; }
   .file-row:hover { background: #f1f3f5; }
-  .file-name-note { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-  .badge { font-size: 0.85em; white-space: normal; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
-  .file-thumb { max-width: 55px; max-height: 55px; object-fit: contain; margin-right: 8px; }
-  #metadataDisplay img { max-width: 100px; transition: transform 0.3s ease; cursor: pointer; display: block; margin-bottom: 10px; }
-  #metadataDisplay img:hover { transform: scale(2); position: relative; z-index: 10; }
+  .file-info-container { display: flex; align-items: center; gap: 12px; white-space: nowrap; flex-grow: 1; min-width: 0; }
+  .file-name { font-weight: 500; text-decoration: none; color: inherit; }
+  .file-name:hover { text-decoration: underline; }
+  
+  .file-thumb {
+    max-width: 55px; max-height: 55px; object-fit: contain;
+    border-radius: 4px; border: 1px solid #ccc;
+    transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+  }
+  .file-thumb:hover {
+    transform: scale(4);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    position: relative;
+    z-index: 10;
+  }
+  .file-details {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+  }
+  .file-metadata-inline {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    color: #555;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .file-metadata-inline span {
+    background-color: #e9ecef;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .note-badge {
+      font-size: 0.8rem;
+      font-weight: normal;
+      margin-left: 8px;
+  }
 </style>
 </head>
 <body>
@@ -49,16 +85,11 @@
   <input type="text" id="searchQuery" class="form-control mb-3" placeholder="Hledat soubor" oninput="filterFiles()" />
 
   <div id="fileList"></div>
-
-  <hr />
-
-  <div id="metadataDisplay" class="mt-3"></div>
 </div>
 
 <script>
   let currentFolder = 'hlavni_slozka';
   let draggedFile = null;
-  let fileNotes = {};
 
   async function fetchFolderTree() {
     const res = await fetch('/all_folders/');
@@ -97,69 +128,80 @@
     if(!res.ok) { alert("Nelze načíst obsah složky."); return; }
     const data = await res.json();
     currentFolder = folder;
-    await fetchNotes(data.files, folder);
     await updateFileList(data.files);
     await fetchFolderTree();
-    clearMetadata();
-  }
-
-  async function fetchNotes(files, folder) {
-    fileNotes = {};
-    for(const file of files) {
-      const path = folder ? folder + '/' + file : file;
-      const res = await fetch(`/get_note/?file_path=${encodeURIComponent(path)}`);
-      if(res.ok){
-        const data = await res.json();
-        fileNotes[path] = data.note || '';
-      }
-    }
   }
 
   async function updateFileList(files) {
     const list = document.getElementById('fileList');
     list.innerHTML = '';
     for(const file of files) {
-      const fullPath = currentFolder ? currentFolder + '/' + file : file;
-      let imgTag = '';
-      try {
-        const metaRes = await fetch(`/file_metadata/?file_path=${encodeURIComponent(fullPath)}`);
-        if(metaRes.ok) {
-          const metaData = await metaRes.json();
-          if(metaData.thumbnail_files && metaData.thumbnail_files.length) {
-            imgTag = `<img src="${metaData.thumbnail_files[0]}" class="file-thumb" alt="miniatura">`;
-          } else if(metaData.thumbnail_url) {
-            imgTag = `<img src="${metaData.thumbnail_url}" class="file-thumb" alt="miniatura">`;
-          }
-        }
-      } catch {}
-      const noteBadge = fileNotes[fullPath]
-          ? `<span class="badge bg-info ms-2">${fileNotes[fullPath]}</span>`
-          : '';
-      const row = document.createElement('div');
-      row.className = 'file-row';
-      row.draggable = true;
-      row.ondragstart = e => { draggedFile = fullPath; };
-      row.innerHTML = `
-        <span class="file-name-note">${imgTag}${file}${noteBadge}</span>
-        <span>
-          <a href="/download/${encodeURIComponent(fullPath)}" class="btn btn-sm btn-primary me-1">Stáhnout</a>
-          <button class="btn btn-sm btn-secondary me-1" onclick="renameFilePrompt('${fullPath}')">Přejmenovat</button>
-          <button class="btn btn-sm btn-info me-1" onclick="notePrompt('${fullPath}')">Poznámka</button>
-          <button class="btn btn-sm btn-danger me-1" onclick="deleteFile('${fullPath}')">Smazat</button>
-          <button class="btn btn-sm btn-warning" onclick="showMetadata('${fullPath}')">Metadata</button>
-        </span>
-      `;
-      list.appendChild(row);
+        const fullPath = currentFolder ? `${currentFolder}/${file}` : file;
+        
+        const row = document.createElement('div');
+        row.className = 'file-row';
+        row.draggable = true;
+        row.ondragstart = e => { draggedFile = fullPath; };
+        
+        row.innerHTML = `
+            <div class="file-info-container">
+                <div class="image-placeholder" style="width:55px; height:55px; flex-shrink: 0; border: 1px solid #eee; border-radius: 4px;"></div>
+                <div class="file-details">
+                    <div class="file-name-container"><a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name">${file}</a></div>
+                    <div class="file-metadata-inline">
+                        <span class="text-muted">Načítání...</span>
+                    </div>
+                </div>
+            </div>
+            <span>
+              <a href="/download/${encodeURIComponent(fullPath)}" class="btn btn-sm btn-primary me-1">Stáhnout</a>
+              <button class="btn btn-sm btn-secondary me-1" onclick="renameFilePrompt('${fullPath}')">Přejmenovat</button>
+              <button class="btn btn-sm btn-info me-1" onclick="notePrompt('${fullPath}')">Poznámka</button>
+              <button class="btn btn-sm btn-danger me-1" onclick="deleteFile('${fullPath}')">Smazat</button>
+            </span>`;
+        list.appendChild(row);
+
+        fetch(`/file_metadata/?file_path=${encodeURIComponent(fullPath)}`)
+            .then(res => res.ok ? res.json() : Promise.reject('Chyba sítě'))
+            .then(metaData => {
+                let imgTag = '<div style="width:55px; height:55px; border:1px solid #ccc; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:0.7rem; color:#888; flex-shrink: 0;">Bez náhledu</div>';
+                if(metaData.thumbnail_files && metaData.thumbnail_files.length) {
+                    imgTag = `<img src="${metaData.thumbnail_files[0]}" class="file-thumb" alt="miniatura">`;
+                }
+                
+                let metaInlineHTML = '';
+                if(metaData.file_type) metaInlineHTML += `<span>${metaData.file_type}</span>`;
+                if(metaData.printer_model) metaInlineHTML += `<span>🖨️ ${metaData.printer_model}</span>`;
+                if(metaData.nozzle_diameter) metaInlineHTML += `<span>◎ ${metaData.nozzle_diameter} mm</span>`;
+                if(metaData.print_time) metaInlineHTML += `<span>🕒 ${metaData.print_time}</span>`;
+                if(metaData.modified) metaInlineHTML += `<span>📅 ${metaData.modified}</span>`;
+                
+                let noteBadgeHTML = '';
+                if(metaData.note) {
+                    noteBadgeHTML = `<span class="badge bg-info note-badge">${metaData.note}</span>`;
+                }
+                
+                const imagePlaceholder = row.querySelector('.image-placeholder');
+                const fileNameContainer = row.querySelector('.file-name-container');
+                const metadataContainer = row.querySelector('.file-metadata-inline');
+
+                if(imagePlaceholder) imagePlaceholder.innerHTML = imgTag;
+                if(fileNameContainer) fileNameContainer.innerHTML = `<a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name">${file}</a> ${noteBadgeHTML}`;
+                if(metadataContainer) metadataContainer.innerHTML = metaInlineHTML;
+            })
+            .catch(err => {
+                const metadataContainer = row.querySelector('.file-metadata-inline');
+                if (metadataContainer) {
+                    metadataContainer.innerHTML = '<span class="text-danger">Chyba metadat</span>';
+                }
+            });
     }
-    clearMetadata();
   }
 
+  // ... (ostatní JS funkce zůstávají stejné) ...
   async function uploadFile() {
     const input = document.getElementById('fileInput');
-    if(!input.files.length) {
-      alert('Vyberte soubor');
-      return;
-    }
+    if(!input.files.length) { alert('Vyberte soubor'); return; }
     const formData = new FormData();
     formData.append('file', input.files[0]);
     formData.append('path', currentFolder);
@@ -196,7 +238,7 @@
     const formData = new FormData();
     formData.append('source', folder);
     formData.append('target', newName);
-    await fetch('/rename_folder/', { method:'POST', body: formData });
+    await fetch('/rename_folder/', { method: 'POST', body: formData });
     fetchFolderTree();
     fetchFiles(currentFolder);
   }
@@ -217,8 +259,9 @@
   }
 
   async function notePrompt(file) {
-    let note = fileNotes[file] || '';
-    let newNote = prompt("Poznámka k souboru:", note);
+    const res = await fetch(`/get_note/?file_path=${encodeURIComponent(file)}`);
+    const data = await res.json();
+    let newNote = prompt("Poznámka k souboru:", data.note || '');
     if(newNote === null) return;
     const formData = new FormData();
     formData.append('file_path', file);
@@ -232,16 +275,9 @@
     const formData = new FormData();
     formData.append('filename', file);
     const res = await fetch('/delete_file/', { method:'POST', body: formData });
-    if(!res.ok) {
-      alert('Chyba při mazání souboru');
-      return;
-    }
+    if(!res.ok) { alert('Chyba při mazání souboru'); return; }
     const data = await res.json();
-    if(data.error) {
-      alert("Chyba: " + data.error);
-    } else {
-      fetchFiles(currentFolder);
-    }
+    if(data.error) { alert("Chyba: " + data.error); } else { fetchFiles(currentFolder); }
   }
 
   function filterFiles() {
@@ -252,40 +288,8 @@
     });
   }
 
-  async function showMetadata(file) {
-    try {
-      const res = await fetch(`/file_metadata/?file_path=${encodeURIComponent(file)}`);
-      if(!res.ok) throw new Error('Chyba při načítání metadat');
-      const data = await res.json();
-      const container = document.getElementById('metadataDisplay');
-      container.innerHTML = '';
-      if(data.thumbnail_files && data.thumbnail_files.length > 0) {
-        data.thumbnail_files.forEach(src => {
-          let img = document.createElement('img');
-          img.src = src;
-          container.appendChild(img);
-        });
-      } else if(data.thumbnail_url) {
-        let img = document.createElement('img');
-        img.src = data.thumbnail_url;
-        container.appendChild(img);
-      }
-      if(data.file_size_kb) container.innerHTML += `<div><strong>Velikost souboru:</strong> ${data.file_size_kb} kB</div>`;
-      if(data.modified) container.innerHTML += `<div><strong>Upraveno:</strong> ${data.modified}</div>`;
-      if(data.print_time) container.innerHTML += `<div><strong>Čas tisku:</strong> ${data.print_time}</div>`;
-      if(data.material) container.innerHTML += `<div><strong>Materiál:</strong> ${data.material}</div>`;
-      if(data.build_plate) container.innerHTML += `<div><strong>Podložka:</strong> ${data.build_plate}</div>`;
-      if(data.layers) container.innerHTML += `<div><strong>Počet vrstev:</strong> ${data.layers}</div>`;
-      if(data.filament_length) container.innerHTML += `<div><strong>Délka filamentu:</strong> ${data.filament_length} mm</div>`;
-      if(data.weight) container.innerHTML += `<div><strong>Váha:</strong> ${data.weight} g</div>`;
-      if(data.printer_model) container.innerHTML += `<div><strong>Model tiskárny:</strong> ${data.printer_model}</div>`;
-    } catch(e) {
-      alert(e.message);
-    }
-  }
-
-  function clearMetadata() {
-    document.getElementById('metadataDisplay').innerHTML = '';
+  function clearMetadata() { 
+      // Tato funkce už není potřeba, protože detail se otevírá na nové stránce
   }
 
   async function updateDiskUsage() {
@@ -297,23 +301,30 @@
         const bar = document.getElementById('diskUsageBar');
         const label = document.getElementById('diskUsagePercent');
         bar.style.width = percent + '%';
-        label.textContent = percent + '%';
+        label.textContent = percent.toFixed(1) + '%';
         bar.setAttribute('aria-valuenow', percent);
-        if(percent > 90) {
-          bar.classList.add('bg-danger');
-          bar.classList.remove('bg-success');
-        } else {
-          bar.classList.add('bg-success');
-          bar.classList.remove('bg-danger');
-        }
+        bar.className = 'progress-bar ' + (percent > 90 ? 'bg-danger' : 'bg-success');
       }
     } catch(err) { console.error('Disk usage error:', err); }
+  }
+  
+  function onDrop(e, folder) {
+    e.preventDefault();
+    if (!draggedFile || folder === currentFolder) return;
+    const formData = new FormData();
+    formData.append('filename', draggedFile);
+    formData.append('target_folder', folder);
+    fetch('/move/', { method: 'POST', body: formData }).then(() => {
+        draggedFile = null;
+        fetchFiles(currentFolder);
+    });
   }
 
   window.onload = () => {
     fetchFolderTree();
     fetchFiles(currentFolder);
     updateDiskUsage();
+    setInterval(updateDiskUsage, 30000);
   };
 </script>
 
