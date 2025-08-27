@@ -22,45 +22,57 @@ HLAVNI_SLOZKA = os.path.join(UPLOAD_DIR, "hlavni_slozka")
 os.makedirs(HLAVNI_SLOZKA, exist_ok=True)
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
 
+def generate_thumbnails_from_3mf(source_path, base_filename):
+    """Extracts all plate thumbnails from a .3mf file."""
+    with zipfile.ZipFile(source_path, 'r') as zf:
+        # Find all images that match the pattern for thumbnails
+        thumbnail_names = sorted([name for name in zf.namelist() if name.startswith('Metadata/plate_') and name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'small' not in name and 'no_light' not in name])
+        
+        if not thumbnail_names:
+            # Fallback to the single thumbnail if no plates are found
+            if 'Metadata/thumbnail.png' in zf.namelist():
+                thumbnail_names.append('Metadata/thumbnail.png')
+            else:
+                print(f"V souboru {base_filename} nebyla nalezena žádná miniatura.")
+                return
+
+        # Save all found thumbnails with unique names
+        for i, thumb_name in enumerate(thumbnail_names):
+            new_thumb_filename = f"{base_filename}_plate_{i+1}.png"
+            thumbnail_path = os.path.join(THUMBNAILS_DIR, new_thumb_filename)
+            thumbnail_data = zf.read(thumb_name)
+            with open(thumbnail_path, 'wb') as f:
+                f.write(thumbnail_data)
+        print(f"Úspěšně vygenerováno {len(thumbnail_names)} miniatur pro {base_filename}")
+
+def generate_thumbnail_from_gcode(source_path, base_filename):
+    """Extracts a thumbnail from a .gcode file's Base64 comments."""
+    thumbnail_path = os.path.join(THUMBNAILS_DIR, f"{base_filename}.png")
+    with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
+        in_thumbnail_block = False
+        base64_data = ""
+        for _ in range(2000): # Search in the beginning of the file
+            line = f.readline()
+            if not line: break
+            if '; thumbnail begin' in line:
+                in_thumbnail_block = True
+                continue
+            if '; thumbnail end' in line: break
+            if in_thumbnail_block:
+                base64_data += line.strip().lstrip('; ')
+        if base64_data:
+            image_data = base64.b64decode(base64_data)
+            with open(thumbnail_path, 'wb') as f:
+                f.write(image_data)
+            print(f"Úspěšně vygenerována miniatura pro {base_filename}")
+
 def generate_thumbnail(source_path):
     try:
         base_filename = os.path.basename(source_path)
         if source_path.lower().endswith('.3mf'):
-            with zipfile.ZipFile(source_path, 'r') as zf:
-                thumbnail_names = [name for name in zf.namelist() if name.lower() == 'metadata/thumbnail.png']
-                if not thumbnail_names:
-                    thumbnail_names = [name for name in zf.namelist() if name.startswith('Metadata/plate_') and name.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                if not thumbnail_names:
-                    print(f"V souboru {base_filename} nebyla nalezena žádná miniatura.")
-                    return
-                
-                thumb_to_extract = thumbnail_names[0]
-                new_thumb_filename = f"{base_filename}.png"
-                thumbnail_path = os.path.join(THUMBNAILS_DIR, new_thumb_filename)
-                thumbnail_data = zf.read(thumb_to_extract)
-                with open(thumbnail_path, 'wb') as f:
-                    f.write(thumbnail_data)
-                print(f"Úspěšně vygenerována miniatura pro {base_filename}")
-
+            generate_thumbnails_from_3mf(source_path, base_filename)
         elif source_path.lower().endswith('.gcode'):
-            thumbnail_path = os.path.join(THUMBNAILS_DIR, f"{base_filename}.png")
-            with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
-                in_thumbnail_block = False
-                base64_data = ""
-                for _ in range(2000):
-                    line = f.readline()
-                    if not line: break
-                    if '; thumbnail begin' in line:
-                        in_thumbnail_block = True
-                        continue
-                    if '; thumbnail end' in line: break
-                    if in_thumbnail_block:
-                        base64_data += line.strip().lstrip('; ')
-                if base64_data:
-                    image_data = base64.b64decode(base64_data)
-                    with open(thumbnail_path, 'wb') as f:
-                        f.write(image_data)
-                    print(f"Úspěšně vygenerována miniatura pro {base_filename}")
+            generate_thumbnail_from_gcode(source_path, base_filename)
     except Exception as e:
         print(f"Chyba při generování miniatury pro {source_path}: {e}")
 
@@ -121,7 +133,7 @@ def parse_gcode_metadata(gcode_content_stream):
             elif "nozzle_diameter" in line:
                 try: metadata["nozzle_diameter"] = float(re.search(r'([\d\.]+)', line).group(1))
                 except: pass
-            elif "layer_height" in line:
+            elif "layer_height" in line and "first_layer_height" not in line:
                 try: metadata["layer_height"] = float(re.search(r'([\d\.]+)', line).group(1))
                 except: pass
             
@@ -135,9 +147,11 @@ def get_all_metadata(abs_path):
     base_filename = os.path.basename(abs_path)
     
     thumbnail_urls = []
-    expected_thumb = os.path.join(THUMBNAILS_DIR, base_filename + ".png")
-    if os.path.exists(expected_thumb):
-        thumbnail_urls.append(f"/thumbnails/{base_filename}.png")
+    # Find all thumbnails belonging to this file
+    for thumb_file in sorted(os.listdir(THUMBNAILS_DIR)):
+        if thumb_file.startswith(base_filename + "_plate_") or thumb_file == base_filename + ".png":
+            url_path = thumb_file.replace("\\", "/")
+            thumbnail_urls.append(f"/thumbnails/{url_path}")
 
     file_stat = os.stat(abs_path)
     size_kb = round(file_stat.st_size / 1024, 2)
@@ -399,7 +413,7 @@ def file_metadata():
 
 # --- NOVÁ ROUTE PRO DETAIL SOUBORU ---
 @app.route('/file_detail/<path:filepath>')
-def file_detail(filepath):
+def file_detail_route(filepath):
     abs_path = os.path.join(UPLOAD_DIR, filepath)
     if not os.path.isfile(abs_path):
         return "Soubor nenalezen", 404

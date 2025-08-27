@@ -6,45 +6,69 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background-color: #f8f9fa; }
-        .container { max-width: 960px; }
-        .preview-image {
+        .container { max-width: 1140px; }
+        .main-preview-image {
             max-width: 100%;
-            max-height: 400px;
+            max-height: 450px;
             object-fit: contain;
             border-radius: .5rem;
             background-color: #e9ecef;
+            border: 1px solid #dee2e6;
         }
         .metadata-card {
             font-size: 0.9rem;
         }
         .metadata-card .list-group-item {
             background-color: transparent;
-            border-color: #dee2e6;
+            border-color: rgba(0,0,0,.075);
+            padding: 0.75rem 1rem;
         }
         .metadata-card strong {
             display: inline-block;
             width: 150px;
             color: #6c757d;
         }
+        .plates-header {
+            border-bottom: 2px solid #0d6efd;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .plate-thumbnail {
+            width: 100%;
+            height: 120px;
+            object-fit: contain;
+            border-radius: .375rem;
+            border: 1px solid #dee2e6;
+            cursor: pointer;
+            transition: transform .2s, box-shadow .2s;
+        }
+        .plate-thumbnail:hover {
+            transform: scale(1.05);
+            box-shadow: 0 .5rem 1rem rgba(0,0,0,.15);
+        }
+        .plate-thumbnail.active {
+            border: 2px solid #0d6efd;
+            box-shadow: 0 .5rem 1rem rgba(0,0,0,.15);
+        }
     </style>
 </head>
 <body>
-    <div class="container mt-4">
+    <div class="container my-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <a href="{{ url_for('list_root_files') }}" class="btn btn-outline-secondary">← Zpět na soubory</a>
-            <h3 class="mb-0">{{ data.filename }}</h3>
-            <span class="p-2"></span> <!-- Placeholder for alignment -->
+            <h3 class="mb-0 text-truncate px-3">{{ data.filename }}</h3>
+            <a href="/download/{{ data.full_path }}" class="btn btn-primary">Stáhnout soubor</a>
         </div>
 
         <div class="row g-4">
-            <div class="col-md-5 text-center">
+            <div class="col-lg-5 text-center">
                 {% if data.thumbnail_files %}
-                    <img src="{{ data.thumbnail_files[0] }}" alt="Náhled" class="preview-image shadow-sm">
+                    <img src="{{ data.thumbnail_files[0] }}" alt="Hlavní náhled" id="mainPreviewImage" class="main-preview-image shadow-sm">
                 {% else %}
-                    <div class="preview-image d-flex align-items-center justify-content-center text-muted">Bez náhledu</div>
+                    <div class="main-preview-image d-flex align-items-center justify-content-center text-muted">Bez náhledu</div>
                 {% endif %}
             </div>
-            <div class="col-md-7">
+            <div class="col-lg-7">
                 <div class="card metadata-card">
                     <div class="card-header">
                         Informace o tisku
@@ -108,6 +132,30 @@
                 </div>
             </div>
         </div>
+
+        {% if data.thumbnail_files|length > 1 %}
+        <div class="mt-5">
+            <h4 class="plates-header">Tiskové pláty ({{ data.thumbnail_files|length }})</h4>
+            <div class="row g-3" id="platesContainer">
+                {% for thumb_url in data.thumbnail_files %}
+                <div class="col-6 col-sm-4 col-md-3 col-lg-2">
+                    <img src="{{ thumb_url }}" alt="Plát {{ loop.index }}" class="plate-thumbnail {% if loop.first %}active{% endif %}" onclick="changePreviewImage(this, '{{ thumb_url }}')">
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
     </div>
+
+    <script>
+        function changePreviewImage(element, newSrc) {
+            document.getElementById('mainPreviewImage').src = newSrc;
+            
+            // Handle active state for thumbnails
+            const plates = document.querySelectorAll('.plate-thumbnail');
+            plates.forEach(p => p.classList.remove('active'));
+            element.classList.add('active');
+        }
+    </script>
 </body>
 </html>

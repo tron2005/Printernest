@@ -13,18 +13,19 @@
   .file-row { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eaeaea; align-items: center; }
   .file-row:hover { background: #f1f3f5; }
   .file-info-container { display: flex; align-items: center; gap: 12px; white-space: nowrap; flex-grow: 1; min-width: 0; }
-  .file-name { font-weight: 500; text-decoration: none; color: inherit; }
-  .file-name:hover { text-decoration: underline; }
+  .file-name-link { font-weight: 500; text-decoration: none; color: inherit; }
+  .file-name-link:hover { text-decoration: underline; }
   
   .file-thumb {
     max-width: 55px; max-height: 55px; object-fit: contain;
     border-radius: 4px; border: 1px solid #ccc;
     transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    cursor: pointer;
   }
-  .file-thumb:hover {
+  .file-row:hover .file-thumb {
     transform: scale(4);
     box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-    position: relative;
+    position: absolute;
     z-index: 10;
   }
   .file-details {
@@ -32,6 +33,7 @@
     flex-direction: column;
     gap: 4px;
     align-items: flex-start;
+    overflow: hidden;
   }
   .file-metadata-inline {
     display: flex;
@@ -147,7 +149,7 @@
             <div class="file-info-container">
                 <div class="image-placeholder" style="width:55px; height:55px; flex-shrink: 0; border: 1px solid #eee; border-radius: 4px;"></div>
                 <div class="file-details">
-                    <div class="file-name-container"><a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name">${file}</a></div>
+                    <div class="file-name-container"><a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name-link">${file}</a></div>
                     <div class="file-metadata-inline">
                         <span class="text-muted">Načítání...</span>
                     </div>
@@ -186,7 +188,7 @@
                 const metadataContainer = row.querySelector('.file-metadata-inline');
 
                 if(imagePlaceholder) imagePlaceholder.innerHTML = imgTag;
-                if(fileNameContainer) fileNameContainer.innerHTML = `<a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name">${file}</a> ${noteBadgeHTML}`;
+                if(fileNameContainer) fileNameContainer.innerHTML = `<a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name-link">${file}</a> ${noteBadgeHTML}`;
                 if(metadataContainer) metadataContainer.innerHTML = metaInlineHTML;
             })
             .catch(err => {
@@ -287,11 +289,7 @@
       row.style.display = text.includes(query) ? '' : 'none';
     });
   }
-
-  function clearMetadata() { 
-      // Tato funkce už není potřeba, protože detail se otevírá na nové stránce
-  }
-
+  
   async function updateDiskUsage() {
     try {
       const res = await fetch('/disk_usage/');
