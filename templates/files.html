@@ -1,329 +1,541 @@
 <!DOCTYPE html>
 <html lang="cs">
 <head>
-<meta charset="utf-8" />
-<title>Správce souborů</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-<style>
-  body { display: flex; height: 100vh; margin: 0; font-family: Arial,sans-serif; }
-  #sidebar { width: 300px; background-color: #f8f9fa; overflow-y: auto; border-right: 1px solid #ddd; }
-  #sidebar .folder { padding: 8px 16px; cursor: pointer; display:flex; justify-content:space-between; align-items:center; }
-  #sidebar .folder.active { background-color: #0d6efd; color: white; font-weight: bold; }
-  #main { flex: 1; padding: 20px; overflow-y: auto; }
-  .file-row { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eaeaea; align-items: center; }
-  .file-row:hover { background: #f1f3f5; }
-  .file-info-container { display: flex; align-items: center; gap: 12px; white-space: nowrap; flex-grow: 1; min-width: 0; }
-  .file-name-link { font-weight: 500; text-decoration: none; color: inherit; }
-  .file-name-link:hover { text-decoration: underline; }
-  
-  .file-thumb {
-    max-width: 55px; max-height: 55px; object-fit: contain;
-    border-radius: 4px; border: 1px solid #ccc;
-    transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-    cursor: pointer;
-  }
-  .file-row:hover .file-thumb {
-    transform: scale(4);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-    position: absolute;
-    z-index: 10;
-  }
-  .file-details {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    align-items: flex-start;
-    overflow: hidden;
-  }
-  .file-metadata-inline {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    font-size: 0.8rem;
-    color: #555;
-    gap: 8px;
-    margin-top: 4px;
-  }
-  .file-metadata-inline span {
-    background-color: #e9ecef;
-    padding: 2px 6px;
-    border-radius: 4px;
-    white-space: nowrap;
-  }
-  .note-badge {
-      font-size: 0.8rem;
-      font-weight: normal;
-      margin-left: 8px;
-  }
-</style>
+    <meta charset="utf-8" />
+    <title>Správce souborů</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+        body { display: flex; height: 100vh; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        #sidebar { width: 300px; background-color: #f8f9fa; overflow-y: auto; border-right: 1px solid #ddd; flex-shrink: 0; }
+        #sidebar .folder {
+            padding: 8px 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #sidebar .folder.active { background-color: #0d6efd; color: white; font-weight: bold; }
+        #sidebar .folder:not(.active):hover { background-color: #e9ecef; }
+        #main { flex: 1; padding: 24px; overflow-y: auto; }
+        .file-thumb-wrapper {
+            position: relative;
+            width: 55px;
+            height: 55px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .file-thumb {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+            cursor: pointer;
+            background-color: #fff;
+        }
+        .file-thumb:hover {
+            transform: scale(3.5);
+            transform-origin: center left;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+            position: absolute;
+            z-index: 1050;
+            background-color: rgba(255, 255, 255, 0.98);
+            padding: 5px;
+        }
+        #uploadProgressContainer { margin-top: 1rem; }
+        .progress-wrapper { margin-bottom: 0.5rem; }
+        .table th {
+            vertical-align: middle;
+            white-space: nowrap;
+            position: relative;
+        }
+        .resizer {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 5px;
+            cursor: col-resize;
+            user-select: none;
+            height: 100%;
+        }
+        .table th.sortable { cursor: pointer; }
+        .table th.sortable::after { content: ' \2195'; opacity: 0.3; }
+        .table th.sort-asc::after { content: ' \2191'; opacity: 1; }
+        .table th.sort-desc::after { content: ' \2193'; opacity: 1; }
+        .actions-cell {
+            display: flex;
+            justify-content: flex-end;
+            gap: 5px;
+        }
+        .bulk-actions {
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+    </style>
 </head>
 <body>
 
 <div id="sidebar">
-  <div class="d-flex align-items-center justify-content-between p-3 border-bottom">
-    <h5 class="mb-0">Složky</h5>
-    <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm" style="font-size:0.9em;">← Zpět</a>
-  </div>
-  <div id="folderTree"></div>
-  <div class="p-3">
-    <input type="text" id="newFolderName" class="form-control mb-2" placeholder="Nová složka" />
-    <button class="btn btn-primary w-100" onclick="createFolder()">Vytvořit složku</button>
-  </div>
+    <div class="d-flex align-items-center justify-content-between p-3 border-bottom">
+        <h5 class="mb-0">Složky</h5>
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm" style="font-size:0.9em;">← Zpět</a>
+    </div>
+    <div id="folderTree"></div>
+    <div class="p-3">
+        <input type="text" id="newFolderName" class="form-control mb-2" placeholder="Nová složka" />
+        <button class="btn btn-primary w-100" onclick="createFolder()">Vytvořit složku</button>
+    </div>
 </div>
 
-<div id="main" class="p-3">
-  <div class="mb-3">
-    <label><strong>Využití disku:</strong> <span id="diskUsagePercent">0%</span></label>
-    <div class="progress">
-      <div id="diskUsageBar" class="progress-bar bg-success" style="width: 0%;"></div>
+<div id="main">
+    <div class="mb-3">
+        <label><strong>Využití disku:</strong> <span id="diskUsagePercent">0%</span></label>
+        <div class="progress">
+            <div id="diskUsageBar" class="progress-bar bg-success" style="width: 0%;"></div>
+        </div>
     </div>
-  </div>
 
-  <div class="mb-3 d-flex align-items-center gap-2">
-    <input type="file" id="fileInput" class="form-control" />
-    <button class="btn btn-success" onclick="uploadFile()">Nahrát</button>
-  </div>
+    <div class="mb-3 d-flex align-items-center gap-2">
+        <input type="file" id="fileInput" class="form-control" multiple />
+        <button class="btn btn-success" onclick="uploadFiles()">Nahrát</button>
+    </div>
+    
+    <div id="uploadProgressContainer"></div>
 
-  <input type="text" id="searchQuery" class="form-control mb-3" placeholder="Hledat soubor" oninput="filterFiles()" />
+    <div class="d-flex justify-content-between mb-3">
+        <input type="text" id="searchQuery" class="form-control w-50" placeholder="Hledat soubor" oninput="filterFiles()" />
+        <div id="bulkActions" class="bulk-actions">
+            <span id="selectionCount"></span>
+            <button class="btn btn-danger btn-sm" onclick="deleteSelectedFiles()">Smazat vybrané</button>
+        </div>
+    </div>
 
-  <div id="fileList"></div>
+    <table class="table table-hover align-middle">
+        <thead>
+            <tr>
+                <th scope="col" style="width: 20px;"><input type="checkbox" id="selectAllCheckbox" onchange="toggleAllCheckboxes(this.checked)"></th>
+                <th scope="col" style="width: 70px;">Náhled</th>
+                <th scope="col" class="sortable" onclick="sortTable(2, 'text')">Název souboru</th>
+                <th scope="col">Typ</th>
+                <th scope="col">Tiskárna</th>
+                <th scope="col">Tryska</th>
+                <th scope="col" class="sortable" onclick="sortTable(6, 'date')">Datum nahrání</th>
+                <th scope="col" class="text-end">Akce</th>
+            </tr>
+        </thead>
+        <tbody id="fileListBody">
+        </tbody>
+    </table>
 </div>
 
 <script>
-  let currentFolder = 'hlavni_slozka';
-  let draggedFile = null;
+    let currentFolder = 'hlavni_slozka';
+    let draggedFile = null;
+    let allFilesData = [];
 
-  async function fetchFolderTree() {
-    const res = await fetch('/all_folders/');
-    const data = await res.json();
-    const tree = document.getElementById('folderTree');
-    tree.innerHTML = '';
-    data.folders.forEach(folder => {
-      if(folder === 'thumbnails') return;
-      const div = document.createElement('div');
-      div.className = 'folder' + (folder === currentFolder ? ' active' : '');
-      div.innerHTML = `<span>${folder || '/'}</span><span></span>`;
-      if(folder && folder !== 'hlavni_slozka') {
-        let btns = document.createElement('span');
-        let renameBtn = document.createElement('button');
-        renameBtn.className = "btn btn-sm btn-outline-secondary";
-        renameBtn.textContent = '✏';
-        renameBtn.onclick = e => { e.stopPropagation(); renameFolderPrompt(folder); };
-        btns.appendChild(renameBtn);
-        let delBtn = document.createElement('button');
-        delBtn.className = "btn btn-sm btn-outline-danger ms-1";
-        delBtn.textContent = '🗑';
-        delBtn.onclick = e => { e.stopPropagation(); deleteFolder(folder); };
-        btns.appendChild(delBtn);
-        div.lastElementChild.replaceWith(btns);
-      }
-      div.onclick = () => fetchFiles(folder);
-      div.ondragover = e => e.preventDefault();
-      div.ondrop = e => onDrop(e, folder);
-      tree.appendChild(div);
-    });
-  }
-
-  async function fetchFiles(folder = currentFolder) {
-    const url = folder ? `/files_in_folder/?foldername=${encodeURIComponent(folder)}` : '/files/';
-    const res = await fetch(url);
-    if(!res.ok) { alert("Nelze načíst obsah složky."); return; }
-    const data = await res.json();
-    currentFolder = folder;
-    await updateFileList(data.files);
-    await fetchFolderTree();
-  }
-
-  async function updateFileList(files) {
-    const list = document.getElementById('fileList');
-    list.innerHTML = '';
-    for(const file of files) {
-        const fullPath = currentFolder ? `${currentFolder}/${file}` : file;
+    async function fetchFolderContents(folder = currentFolder) {
+        currentFolder = folder;
+        document.getElementById('fileListBody').innerHTML = '<tr><td colspan="8" class="text-center p-5"><div class="spinner-border" role="status"><span class="visually-hidden">Načítání...</span></div></td></tr>';
         
-        const row = document.createElement('div');
-        row.className = 'file-row';
-        row.draggable = true;
-        row.ondragstart = e => { draggedFile = fullPath; };
-        
-        row.innerHTML = `
-            <div class="file-info-container">
-                <div class="image-placeholder" style="width:55px; height:55px; flex-shrink: 0; border: 1px solid #eee; border-radius: 4px;"></div>
-                <div class="file-details">
-                    <div class="file-name-container"><a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name-link">${file}</a></div>
-                    <div class="file-metadata-inline">
-                        <span class="text-muted">Načítání...</span>
-                    </div>
-                </div>
-            </div>
-            <span>
-              <a href="/download/${encodeURIComponent(fullPath)}" class="btn btn-sm btn-primary me-1">Stáhnout</a>
-              <button class="btn btn-sm btn-secondary me-1" onclick="renameFilePrompt('${fullPath}')">Přejmenovat</button>
-              <button class="btn btn-sm btn-info me-1" onclick="notePrompt('${fullPath}')">Poznámka</button>
-              <button class="btn btn-sm btn-danger me-1" onclick="deleteFile('${fullPath}')">Smazat</button>
-            </span>`;
-        list.appendChild(row);
-
-        fetch(`/file_metadata/?file_path=${encodeURIComponent(fullPath)}`)
-            .then(res => res.ok ? res.json() : Promise.reject('Chyba sítě'))
-            .then(metaData => {
-                let imgTag = '<div style="width:55px; height:55px; border:1px solid #ccc; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:0.7rem; color:#888; flex-shrink: 0;">Bez náhledu</div>';
-                if(metaData.thumbnail_files && metaData.thumbnail_files.length) {
-                    imgTag = `<img src="${metaData.thumbnail_files[0]}" class="file-thumb" alt="miniatura">`;
-                }
-                
-                let metaInlineHTML = '';
-                if(metaData.file_type) metaInlineHTML += `<span>${metaData.file_type}</span>`;
-                if(metaData.printer_model) metaInlineHTML += `<span>🖨️ ${metaData.printer_model}</span>`;
-                if(metaData.nozzle_diameter) metaInlineHTML += `<span>◎ ${metaData.nozzle_diameter} mm</span>`;
-                if(metaData.print_time) metaInlineHTML += `<span>🕒 ${metaData.print_time}</span>`;
-                if(metaData.modified) metaInlineHTML += `<span>📅 ${metaData.modified}</span>`;
-                
-                let noteBadgeHTML = '';
-                if(metaData.note) {
-                    noteBadgeHTML = `<span class="badge bg-info note-badge">${metaData.note}</span>`;
-                }
-                
-                const imagePlaceholder = row.querySelector('.image-placeholder');
-                const fileNameContainer = row.querySelector('.file-name-container');
-                const metadataContainer = row.querySelector('.file-metadata-inline');
-
-                if(imagePlaceholder) imagePlaceholder.innerHTML = imgTag;
-                if(fileNameContainer) fileNameContainer.innerHTML = `<a href="/file_detail/${encodeURIComponent(fullPath)}" class="file-name-link">${file}</a> ${noteBadgeHTML}`;
-                if(metadataContainer) metadataContainer.innerHTML = metaInlineHTML;
-            })
-            .catch(err => {
-                const metadataContainer = row.querySelector('.file-metadata-inline');
-                if (metadataContainer) {
-                    metadataContainer.innerHTML = '<span class="text-danger">Chyba metadat</span>';
-                }
-            });
+        try {
+            const res = await fetch(`/folder_contents/?foldername=${encodeURIComponent(folder)}`);
+            if (!res.ok) {
+                throw new Error(`Chyba serveru: ${res.status}`);
+            }
+            const data = await res.json();
+            allFilesData = data.files;
+            renderTable();
+            await fetchFolderTree();
+        } catch (error) {
+            console.error("Nepodařilo se načíst obsah složky:", error);
+            document.getElementById('fileListBody').innerHTML = `<tr><td colspan="8" class="text-center p-5 text-danger">Chyba při načítání souborů. Zkontrolujte konzoli serveru.</td></tr>`;
+        }
     }
-  }
 
-  // ... (ostatní JS funkce zůstávají stejné) ...
-  async function uploadFile() {
-    const input = document.getElementById('fileInput');
-    if(!input.files.length) { alert('Vyberte soubor'); return; }
-    const formData = new FormData();
-    formData.append('file', input.files[0]);
-    formData.append('path', currentFolder);
-    await fetch('/upload/', { method:'POST', body: formData });
-    fetchFiles(currentFolder);
-  }
+    function renderTable() {
+        const listBody = document.getElementById('fileListBody');
+        listBody.innerHTML = '';
+        
+        allFilesData.forEach(fileData => {
+            const row = document.createElement('tr');
+            row.draggable = true;
+            row.ondragstart = e => { draggedFile = fileData.path; };
+            
+            let imgTag = '<div style="font-size:0.7rem; color:#888;">Bez náhledu</div>';
+            if(fileData.thumbnail_files && fileData.thumbnail_files.length) {
+                imgTag = `<img src="${fileData.thumbnail_files[0]}" class="file-thumb" alt="miniatura">`;
+            }
+            
+            let noteBadgeHTML = '';
+            if(fileData.note) {
+                noteBadgeHTML = `<span class="badge bg-info text-dark">${fileData.note}</span>`;
+            }
 
-  async function createFolder() {
-    const input = document.getElementById('newFolderName');
-    const folderName = input.value.trim();
-    if(!folderName) return;
-    const formData = new FormData();
-    let fullPath = folderName;
-    if(currentFolder && currentFolder !== '') fullPath = currentFolder + '/' + folderName;
-    formData.append('foldername', fullPath);
-    await fetch('/folders/', { method:'POST', body: formData });
-    input.value = '';
-    fetchFolderTree();
-    fetchFiles(currentFolder);
-  }
+            const dateParts = fileData.modified ? fileData.modified.match(/(\d{2})\.(\d{2})\.(\d{4})\s(\d{2}):(\d{2})/) : null;
+            const sortableDate = dateParts ? `${dateParts[3]}${dateParts[2]}${dateParts[1]}${dateParts[4]}${dateParts[5]}` : '0';
 
-  async function deleteFolder(folder) {
-    if(!confirm(`Opravdu smazat celou složku "${folder}" ?`)) return;
-    const formData = new FormData();
-    formData.append('foldername', folder);
-    await fetch('/delete_folder/', { method:'POST', body: formData });
-    fetchFolderTree();
-    fetchFiles(currentFolder);
-  }
+            row.innerHTML = `
+                <td><input type="checkbox" class="file-checkbox" value="${fileData.path}" onchange="updateSelection()"></td>
+                <td><div class="file-thumb-wrapper">${imgTag}</div></td>
+                <td><a href="/file_detail/${encodeURIComponent(fileData.path)}" class="file-name-link">${fileData.name}</a> ${noteBadgeHTML}</td>
+                <td>${fileData.file_type || 'N/A'}</td>
+                <td>${fileData.printer_model || ''}</td>
+                <td>${fileData.nozzle_diameter ? `◎ ${fileData.nozzle_diameter}mm` : ''}</td>
+                <td data-sort-value="${sortableDate}">${fileData.modified || ''}</td>
+                <td>
+                    <div class="actions-cell">
+                        <a href="/download/${encodeURIComponent(fileData.path)}" class="btn btn-sm btn-outline-primary">Stáhnout</a>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="renameFilePrompt('${fileData.path}')">Přejmenovat</button>
+                        <button class="btn btn-sm btn-outline-info" onclick="notePrompt('${fileData.path}')">Poznámka</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteFile('${fileData.path}')">Smazat</button>
+                    </div>
+                </td>`;
+            listBody.appendChild(row);
+        });
+        updateSelection();
+    }
+    
+    function updateSelection() {
+        const checkboxes = document.querySelectorAll('.file-checkbox:checked');
+        const bulkActionsDiv = document.getElementById('bulkActions');
+        const selectionCountSpan = document.getElementById('selectionCount');
 
-  async function renameFolderPrompt(folder) {
-    let newName = prompt("Zadejte nový název složky:", folder.split('/').pop());
-    if(!newName) return;
-    const formData = new FormData();
-    formData.append('source', folder);
-    formData.append('target', newName);
-    await fetch('/rename_folder/', { method: 'POST', body: formData });
-    fetchFolderTree();
-    fetchFiles(currentFolder);
-  }
+        if (checkboxes.length > 0) {
+            bulkActionsDiv.style.display = 'flex';
+            selectionCountSpan.textContent = `Vybráno: ${checkboxes.length}`;
+        } else {
+            bulkActionsDiv.style.display = 'none';
+        }
+    }
 
-  async function renameFilePrompt(file) {
-    let base = file.split('/').pop();
-    let dotIndex = base.lastIndexOf('.');
-    let nameOnly = dotIndex > -1 ? base.substring(0,dotIndex) : base;
-    let ext = dotIndex > -1 ? base.substring(dotIndex) : "";
-    let newName = prompt("Zadejte nový název souboru:", nameOnly);
-    if(!newName) return;
-    newName += ext;
-    const formData = new FormData();
-    formData.append('old_name', file);
-    formData.append('new_name', newName);
-    await fetch('/rename_file/', { method:'POST', body: formData });
-    fetchFiles(currentFolder);
-  }
+    function toggleAllCheckboxes(checked) {
+        document.querySelectorAll('.file-checkbox').forEach(checkbox => {
+            checkbox.checked = checked;
+        });
+        updateSelection();
+    }
 
-  async function notePrompt(file) {
-    const res = await fetch(`/get_note/?file_path=${encodeURIComponent(file)}`);
-    const data = await res.json();
-    let newNote = prompt("Poznámka k souboru:", data.note || '');
-    if(newNote === null) return;
-    const formData = new FormData();
-    formData.append('file_path', file);
-    formData.append('note', newNote);
-    await fetch('/save_note/', { method:'POST', body: formData });
-    fetchFiles(currentFolder);
-  }
+    async function deleteSelectedFiles() {
+        const selectedFiles = Array.from(document.querySelectorAll('.file-checkbox:checked')).map(cb => cb.value);
+        if (selectedFiles.length === 0) {
+            alert("Nejprve vyberte soubory ke smazání.");
+            return;
+        }
 
-  async function deleteFile(file) {
-    if(!confirm('Opravdu smazat tento soubor?')) return;
-    const formData = new FormData();
-    formData.append('filename', file);
-    const res = await fetch('/delete_file/', { method:'POST', body: formData });
-    if(!res.ok) { alert('Chyba při mazání souboru'); return; }
-    const data = await res.json();
-    if(data.error) { alert("Chyba: " + data.error); } else { fetchFiles(currentFolder); }
-  }
+        if (confirm(`Opravdu chcete smazat ${selectedFiles.length} vybraných souborů?`)) {
+            const response = await fetch('/delete_multiple_files/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filenames: selectedFiles })
+            });
+            
+            if (response.ok) {
+                fetchFolderContents(currentFolder);
+            } else {
+                const result = await response.json();
+                alert("Chyba při mazání souborů: " + (result.error || 'Neznámá chyba'));
+            }
+        }
+    }
 
-  function filterFiles() {
-    let query = document.getElementById('searchQuery').value.toLowerCase();
-    document.querySelectorAll('#fileList .file-row').forEach(row => {
-      let text = row.textContent.toLowerCase();
-      row.style.display = text.includes(query) ? '' : 'none';
-    });
-  }
-  
-  async function updateDiskUsage() {
-    try {
-      const res = await fetch('/disk_usage/');
-      if(res.ok) {
+    async function fetchFolderTree() {
+        const res = await fetch('/all_folders/');
         const data = await res.json();
-        let percent = data.disk_usage_percent;
-        const bar = document.getElementById('diskUsageBar');
-        const label = document.getElementById('diskUsagePercent');
-        bar.style.width = percent + '%';
-        label.textContent = percent.toFixed(1) + '%';
-        bar.setAttribute('aria-valuenow', percent);
-        bar.className = 'progress-bar ' + (percent > 90 ? 'bg-danger' : 'bg-success');
-      }
-    } catch(err) { console.error('Disk usage error:', err); }
-  }
-  
-  function onDrop(e, folder) {
-    e.preventDefault();
-    if (!draggedFile || folder === currentFolder) return;
-    const formData = new FormData();
-    formData.append('filename', draggedFile);
-    formData.append('target_folder', folder);
-    fetch('/move/', { method: 'POST', body: formData }).then(() => {
-        draggedFile = null;
-        fetchFiles(currentFolder);
-    });
-  }
+        const tree = document.getElementById('folderTree');
+        tree.innerHTML = '';
+        
+        data.folders.forEach(folder => {
+            if(folder === 'thumbnails') return;
+            const div = document.createElement('div');
+            div.className = 'folder' + (folder === currentFolder ? ' active' : '');
+            const depth = (folder.match(/\//g) || []).length;
+            div.style.paddingLeft = `${16 + depth * 20}px`;
+            const icon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-folder" viewBox="0 0 16 16"><path d="M.54 3.87.5 3a2 2 0 0 1 2-2h3.672a2 2 0 0 1 1.414.586l.828.828A2 2 0 0 0 9.828 3h3.982a2 2 0 0 1 1.992 2.181l-.637 7A2 2 0 0 1 13.174 14H2.826a2 2 0 0 1-1.991-1.819l-.637-7a1.99 1.99 0 0 1 .342-1.31zM2.19 4a1 1 0 0 0-.996.886L1 12.181a1 1 0 0 0 .996.819h10.348a1 1 0 0 0 .996-.819l.637-7A1 1 0 0 0 13.81 4H9.828a1 1 0 0 1-.707-.293L8.354 3.207A1 1 0 0 0 7.646 3H2.5a1 1 0 0 0-.996.886z"/></svg>`;
+            div.innerHTML = `${icon} <span class="text-truncate">${folder.split('/').pop() || 'Hlavní'}</span>`;
+            if(folder && folder !== 'hlavni_slozka') {
+                let btns = document.createElement('span');
+                btns.className = 'ms-auto';
+                let renameBtn = document.createElement('button');
+                renameBtn.className = "btn btn-sm btn-outline-secondary py-0 px-1";
+                renameBtn.innerHTML = '✏️';
+                renameBtn.onclick = e => { e.stopPropagation(); renameFolderPrompt(folder); };
+                btns.appendChild(renameBtn);
+                let delBtn = document.createElement('button');
+                delBtn.className = "btn btn-sm btn-outline-danger ms-1 py-0 px-1";
+                delBtn.innerHTML = '🗑️';
+                delBtn.onclick = e => { e.stopPropagation(); deleteFolder(folder); };
+                btns.appendChild(delBtn);
+                div.appendChild(btns);
+            }
+            div.onclick = () => fetchFolderContents(folder);
+            div.ondragover = e => e.preventDefault();
+            div.ondrop = e => onDrop(e, folder);
+            tree.appendChild(div);
+        });
+    }
 
-  window.onload = () => {
-    fetchFolderTree();
-    fetchFiles(currentFolder);
-    updateDiskUsage();
-    setInterval(updateDiskUsage, 30000);
-  };
+    function uploadFiles() {
+        const input = document.getElementById('fileInput');
+        const files = input.files;
+        if (files.length === 0) {
+            alert('Vyberte soubory k nahrání.');
+            return;
+        }
+        const progressContainer = document.getElementById('uploadProgressContainer');
+        progressContainer.innerHTML = '';
+        const uploadPromises = Array.from(files).map(file => {
+            return new Promise((resolve, reject) => {
+                const progressWrapper = document.createElement('div');
+                progressWrapper.className = 'progress-wrapper';
+                progressWrapper.innerHTML = `<div>${file.name}</div><div class="progress"><div class="progress-bar" role="progressbar" style="width: 0%">0%</div></div>`;
+                progressContainer.appendChild(progressWrapper);
+                const progressBar = progressWrapper.querySelector('.progress-bar');
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('path', currentFolder);
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/upload/', true);
+                xhr.upload.onprogress = function(e) {
+                    if (e.lengthComputable) {
+                        const percentComplete = (e.loaded / e.total) * 100;
+                        progressBar.style.width = percentComplete + '%';
+                        progressBar.textContent = Math.round(percentComplete) + '%';
+                    }
+                };
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        progressBar.classList.add('bg-success');
+                        progressBar.textContent = 'Hotovo!';
+                        resolve();
+                    } else {
+                        progressBar.classList.add('bg-danger');
+                        progressBar.textContent = 'Chyba!';
+                        reject();
+                    }
+                };
+                xhr.onerror = reject;
+                xhr.send(formData);
+            });
+        });
+        Promise.all(uploadPromises).finally(() => {
+            setTimeout(() => { progressContainer.innerHTML = ''; }, 3000);
+            fetchFolderContents(currentFolder);
+        });
+        input.value = '';
+    }
+
+    let sortDirections = {};
+    function sortTable(columnIndex, type = 'text') {
+        const direction = sortDirections[columnIndex] = (sortDirections[columnIndex] === 'asc' ? 'desc' : 'asc');
+        allFilesData.sort((a, b) => {
+            let valA, valB;
+            if (type === 'date') {
+                valA = a.modified ? a.modified.replace(/(\d{2})\.(\d{2})\.(\d{4})\s(\d{2}):(\d{2})/, '$3$2$1$4$5') : '0';
+                valB = b.modified ? b.modified.replace(/(\d{2})\.(\d{2})\.(\d{4})\s(\d{2}):(\d{2})/, '$3$2$1$4$5') : '0';
+            } else {
+                valA = a.name.toLowerCase();
+                valB = b.name.toLowerCase();
+            }
+            if (valA < valB) return direction === 'asc' ? -1 : 1;
+            if (valA > valB) return direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+        document.querySelectorAll('.table th.sortable').forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+        document.querySelector(`.table th:nth-child(${columnIndex + 1})`).classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+        renderTable();
+    }
+    
+    async function createFolder() {
+        const input = document.getElementById('newFolderName');
+        const folderName = input.value.trim();
+        if(!folderName) return;
+        let fullPath = folderName;
+        if (currentFolder) { 
+            fullPath = `${currentFolder}/${folderName}`;
+        }
+        const formData = new FormData();
+        formData.append('foldername', fullPath);
+        const response = await fetch('/folders/', { method:'POST', body: formData });
+        if(response.ok) {
+            input.value = '';
+            fetchFolderTree();
+        } else {
+            alert('Chyba při vytváření složky.');
+        }
+    }
+
+    async function deleteFolder(folder) {
+        if(!confirm(`Opravdu smazat celou složku "${folder}" ?`)) return;
+        const formData = new FormData();
+        formData.append('foldername', folder);
+        await fetch('/delete_folder/', { method:'POST', body: formData });
+        currentFolder = 'hlavni_slozka';
+        fetchFolderContents(currentFolder);
+    }
+
+    async function renameFolderPrompt(folder) {
+        let newName = prompt("Zadejte nový název složky:", folder.split('/').pop());
+        if(!newName) return;
+        const formData = new FormData();
+        formData.append('source', folder);
+        formData.append('target', newName);
+        await fetch('/rename_folder/', { method: 'POST', body: formData });
+        fetchFolderTree();
+    }
+
+    // ==========================================================
+    // === ZDE JE JEDINÁ SPRÁVNÁ VERZE FUNKCE RENAMEFILEPROMPT ===
+    // ==========================================================
+    async function renameFilePrompt(file) {
+        const base = file.split('/').pop();
+        const dotIndex = base.lastIndexOf('.');
+        const nameOnly = dotIndex > -1 ? base.substring(0, dotIndex) : base;
+        const ext = dotIndex > -1 ? base.substring(dotIndex) : "";
+        let newBaseName = prompt("Zadejte nový název souboru:", nameOnly);
+        if (!newBaseName || newBaseName === nameOnly) return;
+
+        const newFullName = newBaseName + ext;
+
+        const formData = new FormData();
+        formData.append('old_name', file);
+        formData.append('new_name', newFullName);
+
+        const response = await fetch('/rename_file/', { method: 'POST', body: formData });
+        const result = await response.json();
+
+        if (response.ok) {
+            const fileToUpdate = allFilesData.find(f => f.path === file);
+            if (fileToUpdate) {
+                const oldBaseName = file.split('/').pop();
+
+                // Aktualizuje hlavní cestu (pro odkaz na detail)
+                fileToUpdate.path = result.new_path;
+
+                // Aktualizuje zobrazované jméno
+                fileToUpdate.name = newFullName;
+
+                // (DŮLEŽITÁ OPRAVA) Aktualizuje cesty k náhledům
+                if (fileToUpdate.thumbnail_files && fileToUpdate.thumbnail_files.length > 0) {
+                    fileToUpdate.thumbnail_files = fileToUpdate.thumbnail_files.map(thumbPath =>
+                        thumbPath.replace(oldBaseName, newFullName)
+                    );
+                }
+            }
+            renderTable(); // Znovu vykreslí tabulku se správnými daty
+        } else {
+            alert("Chyba při přejmenování: " + (result.error || 'Neznámá chyba'));
+        }
+    }
+
+    async function notePrompt(file) {
+        const res = await fetch(`/get_note/?file_path=${encodeURIComponent(file)}&plate_index=1`);
+        const data = await res.json();
+        let newNote = prompt("Poznámka k souboru (pro první plát):", data.note || '');
+        if(newNote === null) return;
+        const formData = new FormData();
+        formData.append('file_path', file);
+        formData.append('plate_index', 1);
+        formData.append('note', newNote);
+        await fetch('/save_note/', { method:'POST', body: formData });
+        fetchFolderContents(currentFolder);
+    }
+
+    async function deleteFile(file) {
+        if(!confirm('Opravdu smazat tento soubor?')) return;
+        const formData = new FormData();
+        formData.append('filename', file);
+        const res = await fetch('/delete_file/', { method:'POST', body: formData });
+        if(!res.ok) { alert('Chyba při mazání souboru'); return; }
+        const data = await res.json();
+        if(data.error) { alert("Chyba: " + data.error); } else { fetchFolderContents(currentFolder); }
+    }
+
+    function filterFiles() {
+        let query = document.getElementById('searchQuery').value.toLowerCase();
+        document.querySelectorAll('#fileListBody tr').forEach(row => {
+            let text = row.textContent.toLowerCase();
+            row.style.display = text.includes(query) ? '' : 'none';
+        });
+    }
+    
+    async function updateDiskUsage() {
+        try {
+            const res = await fetch('/disk_usage/');
+            if(res.ok) {
+                const data = await res.json();
+                let percent = data.disk_usage_percent;
+                const bar = document.getElementById('diskUsageBar');
+                const label = document.getElementById('diskUsagePercent');
+                bar.style.width = percent + '%';
+                label.textContent = percent.toFixed(1) + '%';
+                bar.setAttribute('aria-valuenow', percent);
+                bar.className = 'progress-bar ' + (percent > 90 ? 'bg-danger' : 'bg-success');
+            }
+        } catch(err) { console.error('Disk usage error:', err); }
+    }
+    
+    function onDrop(e, folder) {
+        e.preventDefault();
+        if (!draggedFile || folder === currentFolder) return;
+        const formData = new FormData();
+        formData.append('filename', draggedFile);
+        formData.append('target_folder', folder);
+        fetch('/move/', { method: 'POST', body: formData }).then(() => {
+            draggedFile = null;
+            fetchFolderContents(currentFolder);
+        });
+    }
+
+    const createResizableTable = function (table) {
+        const cols = table.querySelectorAll('th');
+        const tableId = 'resizable-table-widths-v2';
+        const savedWidths = localStorage.getItem(tableId);
+        if (savedWidths) {
+            const widths = JSON.parse(savedWidths);
+            if (widths.length === cols.length) {
+                cols.forEach((col, i) => {
+                    col.style.width = `${widths[i]}px`;
+                });
+            }
+        }
+        cols.forEach(col => {
+            const resizer = document.createElement('div');
+            resizer.classList.add('resizer');
+            col.appendChild(resizer);
+            resizer.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                const th = e.target.parentElement;
+                let startX = e.pageX;
+                let startWidth = th.offsetWidth;
+                const mouseMoveHandler = function (e) {
+                    const dx = e.pageX - startX;
+                    th.style.width = `${startWidth + dx}px`;
+                };
+                const mouseUpHandler = function () {
+                    document.removeEventListener('mousemove', mouseMoveHandler);
+                    document.removeEventListener('mouseup', mouseUpHandler);
+                    const newWidths = Array.from(cols).map(c => c.offsetWidth);
+                    localStorage.setItem(tableId, JSON.stringify(newWidths));
+                };
+                document.addEventListener('mousemove', mouseMoveHandler);
+                document.addEventListener('mouseup', mouseUpHandler);
+            });
+        });
+    };
+
+    window.onload = () => {
+        fetchFolderTree();
+        fetchFolderContents(currentFolder);
+        updateDiskUsage();
+        setInterval(updateDiskUsage, 30000);
+        createResizableTable(document.querySelector('.table'));
+    };
 </script>
 
 </body>

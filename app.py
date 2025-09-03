@@ -2,6 +2,7 @@ import os
 import shutil
 import datetime
 import re
+import json
 from flask import Flask, render_template, request, redirect, url_for, jsonify, send_from_directory, abort
 from printers import load_printers, save_printers
 import mqtt_client
@@ -13,6 +14,9 @@ from io import StringIO
 
 app = Flask(__name__)
 
+# --- Konfigurace ---
+CONFIG = { "filament_price_per_kg": 550 }
+
 IMAGE_DIR = os.path.join(os.path.dirname(__file__), 'static', 'printers')
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
@@ -22,178 +26,255 @@ HLAVNI_SLOZKA = os.path.join(UPLOAD_DIR, "hlavni_slozka")
 os.makedirs(HLAVNI_SLOZKA, exist_ok=True)
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
 
-def generate_thumbnails_from_3mf(source_path, base_filename):
-    """Extracts all plate thumbnails from a .3mf file."""
-    with zipfile.ZipFile(source_path, 'r') as zf:
-        # Find all images that match the pattern for thumbnails
-        thumbnail_names = sorted([name for name in zf.namelist() if name.startswith('Metadata/plate_') and name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'small' not in name and 'no_light' not in name])
-        
-        if not thumbnail_names:
-            # Fallback to the single thumbnail if no plates are found
-            if 'Metadata/thumbnail.png' in zf.namelist():
-                thumbnail_names.append('Metadata/thumbnail.png')
-            else:
-                print(f"V souboru {base_filename} nebyla nalezena žádná miniatura.")
-                return
-
-        # Save all found thumbnails with unique names
-        for i, thumb_name in enumerate(thumbnail_names):
-            new_thumb_filename = f"{base_filename}_plate_{i+1}.png"
-            thumbnail_path = os.path.join(THUMBNAILS_DIR, new_thumb_filename)
-            thumbnail_data = zf.read(thumb_name)
-            with open(thumbnail_path, 'wb') as f:
-                f.write(thumbnail_data)
-        print(f"Úspěšně vygenerováno {len(thumbnail_names)} miniatur pro {base_filename}")
-
-def generate_thumbnail_from_gcode(source_path, base_filename):
-    """Extracts a thumbnail from a .gcode file's Base64 comments."""
-    thumbnail_path = os.path.join(THUMBNAILS_DIR, f"{base_filename}.png")
-    with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
-        in_thumbnail_block = False
-        base64_data = ""
-        for _ in range(2000): # Search in the beginning of the file
-            line = f.readline()
-            if not line: break
-            if '; thumbnail begin' in line:
-                in_thumbnail_block = True
-                continue
-            if '; thumbnail end' in line: break
-            if in_thumbnail_block:
-                base64_data += line.strip().lstrip('; ')
-        if base64_data:
-            image_data = base64.b64decode(base64_data)
-            with open(thumbnail_path, 'wb') as f:
-                f.write(image_data)
-            print(f"Úspěšně vygenerována miniatura pro {base_filename}")
-
-def generate_thumbnail(source_path):
+def generate_thumbnails(source_path):
     try:
         base_filename = os.path.basename(source_path)
         if source_path.lower().endswith('.3mf'):
-            generate_thumbnails_from_3mf(source_path, base_filename)
-        elif source_path.lower().endswith('.gcode'):
-            generate_thumbnail_from_gcode(source_path, base_filename)
+            with zipfile.ZipFile(source_path, 'r') as zf:
+                thumbnail_names = sorted(
+                    [name for name in zf.namelist() if name.startswith('Metadata/plate_') and name.lower().endswith(('.png', '.jpg', '.jpeg')) and 'small' not in name and 'no_light' not in name],
+                    key=lambda x: int(re.search(r'plate_(\d+)', x).group(1)) if re.search(r'plate_(\d+)', x) else 0
+                )
+                if not thumbnail_names and 'Metadata/thumbnail.png' in zf.namelist():
+                    thumbnail_names.append('Metadata/thumbnail.png')
+                if not thumbnail_names: return
+                for i, thumb_name in enumerate(thumbnail_names):
+                    plate_index_match = re.search(r'plate_(\d+)', thumb_name)
+                    plate_index = plate_index_match.group(1) if plate_index_match else (i + 1)
+                    new_thumb_filename = f"{base_filename}_plate_{plate_index}.png"
+                    thumbnail_path = os.path.join(THUMBNAILS_DIR, new_thumb_filename)
+                    with open(thumbnail_path, 'wb') as f: f.write(zf.read(thumb_name))
     except Exception as e:
         print(f"Chyba při generování miniatury pro {source_path}: {e}")
 
-def parse_3mf_sliceinfo(zip_file):
-    metadata = {"print_time": None, "material": None, "weight": None, "printer_model": None, "filament_length": None}
-    try:
-        sliceinfo_files = [n for n in zip_file.namelist() if n.lower().endswith("sliceinfo.config")]
-        if not sliceinfo_files: return metadata
-        xml_content = zip_file.read(sliceinfo_files[0]).decode('utf-8', 'ignore')
-        root = ET.fromstring(xml_content)
-        
-        model_map = {"C11": "P1S", "C12": "P1S Combo", "C13": "A1", "C14": "A1 Combo"}
-
-        for plate in root.findall("plate"):
-            for meta in plate.findall("metadata"):
-                key, value = meta.attrib.get("key", "").lower(), meta.attrib.get("value")
-                if key == "prediction" and value:
-                    try:
-                        seconds = float(value)
-                        h, m = int(seconds // 3600), int((seconds % 3600) // 60)
-                        metadata["print_time"] = f"{h}h {m}m" if h > 0 else f"{m}m"
-                    except: pass
-                elif key == "weight" and value:
-                    metadata["weight"] = f"{float(value):.2f}"
-                elif key == "printer_model_id" and value:
-                    metadata["printer_model"] = model_map.get(value, value)
-
-            filament = plate.find("filament")
-            if filament is not None:
-                if filament.attrib.get("type"):
-                    metadata["material"] = filament.attrib.get("type")
-                if filament.attrib.get("length"):
-                    try:
-                        length_mm = float(filament.attrib.get("length"))
-                        metadata["filament_length"] = f"{(length_mm / 1000):.2f}"
-                    except: pass
-    except Exception: pass
-    return metadata
-
-def parse_gcode_metadata(gcode_content_stream):
-    metadata = {"layers": None, "nozzle_temp": None, "bed_temp": None, "nozzle_diameter": None, "layer_height": None}
+def parse_gcode_header_params(gcode_content_stream):
+    params = {}
     try:
         lines = gcode_content_stream.readlines()
-        for i, line in enumerate(lines):
-            if isinstance(line, bytes):
-                line = line.decode('utf-8', 'ignore')
-            
+        for line in lines[:2000]:
+            if isinstance(line, bytes): line = line.decode('utf-8', 'ignore')
             line = line.strip()
-            if "total layer number" in line:
-                try: metadata["layers"] = int(re.search(r'(\d+)', line).group(1))
-                except: pass
-            elif "nozzle temperature:" in line:
-                try: metadata["nozzle_temp"] = int(re.search(r'(\d+)', line).group(1))
-                except: pass
-            elif "bed temperature:" in line:
-                try: metadata["bed_temp"] = int(re.search(r'(\d+)', line).group(1))
-                except: pass
-            elif "nozzle_diameter" in line:
-                try: metadata["nozzle_diameter"] = float(re.search(r'([\d\.]+)', line).group(1))
-                except: pass
-            elif "layer_height" in line and "first_layer_height" not in line:
-                try: metadata["layer_height"] = float(re.search(r'([\d\.]+)', line).group(1))
-                except: pass
-            
-            if i > 500:
-                break
-    except Exception as e:
-        print(f"Chyba při parsování G-kódu: {e}")
-    return metadata
+            if line.startswith(';'):
+                if "=" in line:
+                    parts = line.lstrip('; ').split('=', 1)
+                    if len(parts) == 2: params[parts[0].strip()] = parts[1].strip().strip('"')
+                elif ":" in line:
+                    parts = line.lstrip('; ').split(':', 1)
+                    if len(parts) == 2: params[parts[0].strip()] = parts[1].strip()
+    except Exception as e: print(f"Chyba při parsování G-kódu: {e}")
+    return params
 
-def get_all_metadata(abs_path):
-    base_filename = os.path.basename(abs_path)
+def seconds_to_hms(seconds_str):
+    try:
+        seconds = int(float(seconds_str))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        return f"{h}h {m}m {s}s"
+    except (ValueError, TypeError):
+        return None
+
+def get_full_metadata(abs_path):
+    base_filename, file_stat = os.path.basename(abs_path), os.stat(abs_path)
+    file_size_bytes = file_stat.st_size
+    file_size_str = f"{round(file_size_bytes / 1024, 2)} kB" if file_size_bytes < 1024 * 1024 else f"{round(file_size_bytes / (1024 * 1024), 2)} MB"
+    data = {"filename": base_filename, "full_path": os.path.relpath(abs_path, UPLOAD_DIR).replace("\\", "/"), "file_size": file_size_str, "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime('%d.%m.%Y %H:%M'), "plates": [], "global_info": {}}
     
-    thumbnail_urls = []
-    # Find all thumbnails belonging to this file
-    for thumb_file in sorted(os.listdir(THUMBNAILS_DIR)):
-        if thumb_file.startswith(base_filename + "_plate_") or thumb_file == base_filename + ".png":
-            url_path = thumb_file.replace("\\", "/")
-            thumbnail_urls.append(f"/thumbnails/{url_path}")
-
-    file_stat = os.stat(abs_path)
-    size_kb = round(file_stat.st_size / 1024, 2)
-    modified = datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime('%d.%m.%Y %H:%M')
-
-    metadata = { "print_time": None, "layers": None, "material": None, "weight": None, "nozzle_temp": None, "bed_temp": None, "printer_model": None, "filament_length": None, "nozzle_diameter": None, "layer_height": None }
-    file_type = "Soubor"
-
-    if abs_path.lower().endswith('.3mf'):
-        file_type = "Tiskový soubor (.3mf)"
-        with zipfile.ZipFile(abs_path, 'r') as zf:
-            xml_meta = parse_3mf_sliceinfo(zf)
-            metadata.update(xml_meta)
-            gcode_files = [n for n in zf.namelist() if n.startswith('Metadata/plate_') and n.lower().endswith('.gcode')]
-            if gcode_files:
-                gcode_content = zf.read(gcode_files[0])
-                gcode_stream = StringIO(gcode_content.decode('utf-8', 'ignore'))
-                gcode_meta = parse_gcode_metadata(gcode_stream)
-                metadata.update(gcode_meta)
-
-    elif abs_path.lower().endswith(('.gcode', '.gcode.gz')):
-        file_type = "G-Code (.gcode)"
-        with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
-            gcode_meta = parse_gcode_metadata(f)
-            metadata.update(gcode_meta)
-
-    note_content = ""
     note_path = abs_path + ".note"
+    notes = {}
     if os.path.exists(note_path):
         with open(note_path, 'r', encoding='utf-8') as f:
-            note_content = f.read()
+            try: notes = json.load(f)
+            except json.JSONDecodeError: f.seek(0); notes = {"plate_1": f.read()}
 
-    return {
-        "filename": base_filename,
-        "full_path": os.path.relpath(abs_path, UPLOAD_DIR).replace("\\", "/"),
-        "thumbnail_files": thumbnail_urls,
-        "file_size_kb": size_kb,
-        "modified": modified,
-        "note": note_content,
-        "file_type": file_type,
-        **metadata
-    }
+    if abs_path.lower().endswith('.3mf'):
+        with zipfile.ZipFile(abs_path, 'r') as zf:
+            plate_details, filaments_map = {}, {}
+            
+            if "Metadata/slice_info.config" in zf.namelist():
+                try:
+                    root = ET.fromstring(zf.read("Metadata/slice_info.config").decode('utf-8', 'ignore'))
+                    model_map = {"C11": "P1S", "C12": "P1S Combo", "C13": "A1", "C14": "A1 Combo", "N2S": "A1"}
+                    for meta in root.findall(".//metadata"):
+                        if meta.attrib.get("key", "").lower() == "printer_model_id":
+                            data["global_info"]["printer_model"] = model_map.get(meta.attrib.get("value"), meta.attrib.get("value"))
+                    for filament_node in root.findall(".//filament"):
+                        filaments_map[filament_node.attrib.get("id")] = { "type": filament_node.attrib.get("type"), "color": filament_node.attrib.get("color", "AAAAAA")[:6] }
+                    for plate_node in root.findall("plate"):
+                        idx_node = plate_node.find('.//metadata[@key="index"]')
+                        if idx_node is not None:
+                            idx = idx_node.attrib.get('value')
+                            if idx:
+                                plate_details[idx] = {
+                                    'prediction': plate_node.find('.//metadata[@key="prediction"]').attrib.get('value') if plate_node.find('.//metadata[@key="prediction"]') is not None else None,
+                                    'weight': plate_node.find('.//metadata[@key="weight"]').attrib.get('value') if plate_node.find('.//metadata[@key="weight"]') is not None else None,
+                                    'filament_id': plate_node.find("filament").attrib.get("id") if plate_node.find("filament") is not None else None
+                                }
+                except Exception as e: print(f"Chyba při parsování slice_info.config: {e}")
+            
+            if "Metadata/model_settings.config" in zf.namelist():
+                try:
+                    root = ET.fromstring(zf.read("Metadata/model_settings.config").decode('utf-8', 'ignore'))
+                    for plate_node in root.findall("plate"):
+                        idx_node = plate_node.find('.//metadata[@key="plater_id"]')
+                        name_node = plate_node.find('.//metadata[@key="plater_name"]')
+                        if idx_node is not None and name_node is not None:
+                            idx = idx_node.attrib.get('value')
+                            name = name_node.attrib.get('value')
+                            if idx and idx in plate_details:
+                                plate_details[idx]['name'] = name
+                except Exception as e: print(f"Chyba při parsování model_settings.config: {e}")
+
+            gcode_files = sorted([n for n in zf.namelist() if n.startswith('Metadata/plate_') and n.lower().endswith('.gcode')], key=lambda x: int(re.search(r'plate_(\d+)', x).group(1)) if re.search(r'plate_(\d+)', x) else 0)
+            
+            data["file_type"] = "Projekt Bambu Studio" if not gcode_files else "Tiskový soubor (.3mf)"
+            
+            num_plates = len(gcode_files) if gcode_files else 1
+            for i in range(1, num_plates + 1):
+                idx = str(i)
+                plate_meta = plate_details.get(idx, {})
+                
+                gcode_params = {}
+                if gcode_files and i <= len(gcode_files):
+                    gcode_file_name = gcode_files[i-1]
+                    gcode_params = parse_gcode_header_params(StringIO(zf.read(gcode_file_name).decode('utf-8', 'ignore')))
+
+                weight_str = plate_meta.get('weight') or gcode_params.get('total filament weight [g]')
+                time_from_gcode = gcode_params.get('model printing time')
+                time_from_xml = seconds_to_hms(plate_meta.get('prediction'))
+                filament_length_mm_str = gcode_params.get('total filament length [mm]')
+                final_print_time = time_from_xml or time_from_gcode
+                
+                # Logika pro teplotu trysky (ponechána, protože fungovala)
+                nozzle_temp_initial_str = str(gcode_params.get('nozzle_temperature_initial_layer') or gcode_params.get('nozzle_temperature', '0')).split(',')[0]
+                nozzle_temp_other_str = str(gcode_params.get('nozzle_temperature', nozzle_temp_initial_str)).split(',')[0]
+
+                # Logika pro teplotu podložky (rozšířená o nalezené klíče)
+                bed_temp_initial_val = (gcode_params.get('textured_plate_temp_initial_layer') or 
+                                        gcode_params.get('hot_plate_temp_initial_layer') or 
+                                        gcode_params.get('cool_plate_temp_initial_layer') or
+                                        gcode_params.get('bed_temperature_initial_layer'))
+                                        
+                bed_temp_other_val = (gcode_params.get('textured_plate_temp') or 
+                                      gcode_params.get('hot_plate_temp') or 
+                                      gcode_params.get('cool_plate_temp') or
+                                      gcode_params.get('bed_temperature'))
+
+                bed_temp_initial_str = str(bed_temp_initial_val or bed_temp_other_val or '0').split(',')[0]
+                bed_temp_other_str = str(bed_temp_other_val or bed_temp_initial_str).split(',')[0]
+                
+                final_plate_data = {
+                    "plate_index": i, "plate_name": plate_meta.get("name") or f"Plát {i}",
+                    "thumbnail": f"/thumbnails/{base_filename}_plate_{i}.png", "note": notes.get(f"plate_{i}", ""),
+                    "print_time": final_print_time,
+                    "weight": float(weight_str) if weight_str else None,
+                    "filament_length": f"{float(filament_length_mm_str)/1000:.2f}" if filament_length_mm_str else None,
+                    "nozzle_diameter": float(gcode_params.get('nozzle_diameter', 0)),
+                    "layer_height": float(gcode_params.get('layer_height', 0)),
+                    "layers": int(gcode_params.get('total layer number', 0)),
+                    "bed_temp_initial": int(float(bed_temp_initial_str)),
+                    "bed_temp_other": int(float(bed_temp_other_str)),
+                    "nozzle_temp_initial": int(float(nozzle_temp_initial_str)),
+                    "nozzle_temp_other": int(float(nozzle_temp_other_str)),
+                    "plate_type": gcode_params.get('curr_bed_type', 'N/A').replace('_', ' ').title(),
+                    "filament": filaments_map.get(plate_meta.get('filament_id')),
+                    "filament_type": gcode_params.get('filament_type', 'N/A').split(';')[0],
+                    "initial_layer_print_height": float(gcode_params.get('initial_layer_print_height', 0)),
+                    "wall_loops": int(gcode_params.get('wall_loops', 0)),
+                    "sparse_infill_pattern": gcode_params.get('sparse_infill_pattern', 'N/A'),
+                    "sparse_infill_density": gcode_params.get('sparse_infill_density', 'N/A'),
+                    "enable_support": "Ano" if gcode_params.get('enable_support') == '1' else "Ne",
+                    "support_type": gcode_params.get('support_type', 'N/A'),
+                    "brim_type": gcode_params.get('brim_type', 'none').replace('_', ' ').title(),
+                    "brim_width": int(gcode_params.get('brim_width', 0))
+                }
+                if final_plate_data['weight']:
+                    cost = (final_plate_data['weight'] / 1000) * CONFIG["filament_price_per_kg"]
+                    final_plate_data['print_cost'] = f"{cost:.2f} Kč"
+                data["plates"].append(final_plate_data)
+    return data
+
+def get_list_view_metadata(abs_path):
+    base_filename, file_stat = os.path.basename(abs_path), os.stat(abs_path)
+    data = {"name": base_filename, "path": os.path.relpath(abs_path, UPLOAD_DIR).replace("\\", "/"), "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime('%d.%m.%Y %H:%M'), "thumbnail_files": [], "note": "", "file_type": "N/A", "printer_model": "", "nozzle_diameter": None}
+    try:
+        if abs_path.lower().endswith('.3mf'):
+            with zipfile.ZipFile(abs_path, 'r') as zf:
+                thumb_name = next((name for name in zf.namelist() if name.startswith('Metadata/plate_') and name.lower().endswith('.png') and 'small' not in name and 'no_light' not in name), None)
+                if thumb_name:
+                    plate_index = (re.search(r'plate_(\d+)', thumb_name) or [None, '1'])[1]
+                    data["thumbnail_files"].append(f"/thumbnails/{base_filename}_plate_{plate_index}.png")
+                
+                printer_name = None
+                if "Metadata/slice_info.config" in zf.namelist():
+                    root = ET.fromstring(zf.read("Metadata/slice_info.config").decode('utf-8', 'ignore'))
+                    model_map = {"C11": "P1S", "C12": "P1S Combo", "C13": "A1", "C14": "A1 Combo", "N2S": "A1"}
+                    for meta in root.findall(".//metadata"):
+                        if meta.attrib.get("key", "").lower() == "printer_model_id": printer_name = model_map.get(meta.attrib.get("value"), meta.attrib.get("value"))
+                
+                if not printer_name and "Metadata/model_settings.config" in zf.namelist():
+                    config_content = zf.read("Metadata/model_settings.config").decode('utf-8', 'ignore')
+                    match = re.search(r'printer_model\s*=\s*"([^"]+)"', config_content)
+                    if match: printer_name = match.group(1)
+
+                if printer_name: data["printer_model"] = printer_name.replace("Bambu Lab ", "")
+                
+                gcode_files = [n for n in zf.namelist() if n.lower().endswith('.gcode')]
+                if not gcode_files: data["file_type"], data["printer_model"] = "Projekt Bambu Studio", ""
+                else: 
+                    data["file_type"] = "Tiskový soubor (.3mf)"
+                    params = parse_gcode_header_params(StringIO(zf.read(gcode_files[0]).decode('utf-8', 'ignore')))
+                    data["nozzle_diameter"] = params.get("nozzle_diameter")
+        
+        note_path = abs_path + ".note"
+        if os.path.exists(note_path):
+            with open(note_path, 'r', encoding='utf-8') as f:
+                try: data["note"] = json.load(f).get("plate_1", "")
+                except json.JSONDecodeError: pass
+    except Exception as e:
+        print(f"Chyba při rychlém čtení metadat pro {base_filename}: {e}")
+        data["file_type"] = "Chyba při čtení"
+    return data
+
+def get_cached_list_view_metadata(abs_path):
+    cache_path = abs_path + ".metadata_cache.json"
+    if os.path.exists(cache_path):
+        try:
+            if os.path.getmtime(cache_path) > os.path.getmtime(abs_path):
+                with open(cache_path, 'r', encoding='utf-8') as f: return json.load(f)
+        except FileNotFoundError: pass
+    metadata = get_list_view_metadata(abs_path)
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f: json.dump(metadata, f)
+    except IOError as e: print(f"Chyba při zápisu do cache souboru {cache_path}: {e}")
+    return metadata
+
+# --- Routes ---
+@app.route('/folder_contents/')
+def folder_contents():
+    foldername = request.args.get('foldername', 'hlavni_slozka')
+    folder_path = os.path.join(UPLOAD_DIR, foldername)
+    if not os.path.isdir(folder_path): return jsonify(files=[])
+    all_files_data = []
+    for filename in os.listdir(folder_path):
+        if os.path.isfile(os.path.join(folder_path, filename)) and not filename.endswith(('.note', '.json')):
+            all_files_data.append(get_cached_list_view_metadata(os.path.join(folder_path, filename)))
+    return jsonify(files=all_files_data)
+
+@app.route('/files/')
+def list_root_files():
+    return render_template('files.html')
+
+@app.route('/file_detail/<path:filepath>')
+def file_detail_route(filepath):
+    abs_path = os.path.join(UPLOAD_DIR, filepath)
+    if not os.path.isfile(abs_path): return "Soubor nenalezen", 404
+    metadata = get_full_metadata(abs_path)
+    return render_template('file_detail.html', data=metadata)
+
+@app.route('/settings/')
+def settings_page():
+    return render_template('settings.html', current_config=CONFIG)
 
 @app.route('/')
 def index():
@@ -203,7 +284,31 @@ def index():
     save_printers(printers)
     return render_template('index.html', printers=printers)
 
-# ... (ostatní printer routes zůstávají stejné) ...
+@app.route('/all_folders/')
+def all_folders():
+    folders = set()
+    for root, dirs, _ in os.walk(UPLOAD_DIR):
+        if 'thumbnails' in dirs: dirs.remove('thumbnails')
+        rel_path = os.path.relpath(root, UPLOAD_DIR)
+        if rel_path != '.': folders.add(rel_path.replace("\\", "/"))
+    folder_list = sorted(list(folders))
+    final_list = ['hlavni_slozka'] + [f for f in folder_list if f != 'hlavni_slozka']
+    return jsonify(folders=final_list)
+
+@app.route('/upload/', methods=['POST'])
+def upload():
+    path = request.form.get('path', '')
+    target_dir = os.path.join(UPLOAD_DIR, path)
+    os.makedirs(target_dir, exist_ok=True)
+    for file in request.files.getlist('file'):
+        if file and file.filename != '':
+            file_dest = os.path.join(target_dir, file.filename)
+            file.save(file_dest)
+            generate_thumbnails(file_dest)
+            cache_path = file_dest + ".metadata_cache.json"
+            if os.path.exists(cache_path): os.remove(cache_path)
+    return jsonify(message="Soubory nahrány")
+
 @app.route('/printer/add', methods=['POST'])
 def add_printer():
     printers = load_printers()
@@ -278,55 +383,15 @@ def delete_printer(pid):
     save_printers(printers)
     return redirect(url_for('index'))
 
-
-@app.route('/files/')
-def list_root_files():
-    return render_template('files.html')
-
-@app.route('/all_folders/')
-def all_folders():
-    folders = []
-    for root, dirs, _ in os.walk(UPLOAD_DIR):
-        for d in dirs:
-            rel = os.path.relpath(os.path.join(root, d), UPLOAD_DIR)
-            if rel == "thumbnails" or rel.startswith("thumbnails/"): continue
-            folders.append("" if rel == "." else rel)
-    folders = [f for f in folders if f != "thumbnails"]
-    sorted_list = ["hlavni_slozka"] + sorted([f for f in folders if f != "hlavni_slozka"])
-    return jsonify(folders=sorted_list)
-
-@app.route('/files_in_folder/')
-def files_in_folder():
-    foldername = request.args.get('foldername', '')
-    folder_path = os.path.join(UPLOAD_DIR, foldername)
-    if not os.path.isdir(folder_path): return jsonify(files=[])
-    files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f)) and not f.endswith('.note')]
-    return jsonify(files=files)
-
-@app.route('/download/<path:filepath>')
-def download(filepath):
-    file_path = os.path.join(UPLOAD_DIR, filepath)
-    if not os.path.isfile(file_path): abort(404)
-    return send_from_directory(UPLOAD_DIR, filepath, as_attachment=True)
-
-@app.route('/upload/', methods=['POST'])
-def upload():
-    path = request.form.get('path', '')
-    target_dir = os.path.join(UPLOAD_DIR, path) if path else UPLOAD_DIR
-    os.makedirs(target_dir, exist_ok=True)
-    file = request.files.get('file')
-    if not file or file.filename == '': return jsonify(error="Neplatný soubor"), 400
-    file_dest = os.path.join(target_dir, file.filename)
-    file.save(file_dest)
-    generate_thumbnail(file_dest)
-    return jsonify(message="Soubor nahrán")
-
 @app.route('/folders/', methods=['POST'])
 def create_folder():
     foldername = request.form.get('foldername')
     if not foldername: return jsonify(error="Chybí název složky"), 400
-    os.makedirs(os.path.join(UPLOAD_DIR, foldername), exist_ok=True)
-    return jsonify(message="Složka vytvořena")
+    try:
+        os.makedirs(os.path.join(UPLOAD_DIR, foldername), exist_ok=True)
+        return jsonify(message="Složka vytvořena")
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
 @app.route('/delete_folder/', methods=['POST'])
 def delete_folder():
@@ -339,10 +404,11 @@ def delete_folder():
 
 @app.route('/rename_folder/', methods=['POST'])
 def rename_folder():
-    source, target = request.form.get('source'), request.form.get('target')
+    source = request.form.get('source')
+    target = request.form.get('target')
     if not source or not target: return jsonify(error="Chybí data"), 400
     src = os.path.join(UPLOAD_DIR, source)
-    tgt = os.path.join(UPLOAD_DIR, os.path.dirname(source), target)
+    tgt = os.path.join(os.path.dirname(src), target)
     if os.path.isdir(src):
         os.rename(src, tgt)
         return jsonify(message="Složka přejmenována")
@@ -350,41 +416,84 @@ def rename_folder():
 
 @app.route('/move/', methods=['POST'])
 def move_file():
-    filename, target_folder = request.form.get('filename'), request.form.get('target_folder')
+    filename = request.form.get('filename')
+    target_folder = request.form.get('target_folder')
     src = os.path.join(UPLOAD_DIR, filename)
     dest_dir = os.path.join(UPLOAD_DIR, target_folder)
     if not os.path.exists(src): return jsonify(error="Soubor neexistuje"), 404
     os.makedirs(dest_dir, exist_ok=True)
     shutil.move(src, os.path.join(dest_dir, os.path.basename(filename)))
-    note_src, note_dst = src + ".note", os.path.join(dest_dir, os.path.basename(filename)) + ".note"
-    if os.path.exists(note_src): shutil.move(note_src, note_dst)
+    for ext in [".note", ".metadata_cache.json"]:
+        if os.path.exists(src + ext): shutil.move(src + ext, os.path.join(dest_dir, os.path.basename(src + ext)))
     return jsonify(message="Soubor přesunut")
 
 @app.route('/rename_file/', methods=['POST'])
 def rename_file():
-    old_name, new_name = request.form.get('old_name'), request.form.get('new_name')
-    src = os.path.join(UPLOAD_DIR, old_name)
-    dst = os.path.join(os.path.dirname(src), new_name)
-    if not os.path.exists(src): return jsonify(error="Soubor neexistuje"), 404
-    os.rename(src, dst)
-    note_src, note_dst = src + ".note", dst + ".note"
-    if os.path.exists(note_src): os.rename(note_src, note_dst)
-    return jsonify(message="Soubor přejmenován")
+    old_name_path = request.form.get('old_name')
+    new_name_base = request.form.get('new_name')
+
+    if not old_name_path or not new_name_base:
+        return jsonify(error="Chybí starý nebo nový název souboru."), 400
+
+    src = os.path.join(UPLOAD_DIR, old_name_path)
+    dst = os.path.join(os.path.dirname(src), new_name_base)
+
+    if not os.path.exists(src):
+        return jsonify(error="Zdrojový soubor neexistuje."), 404
+
+    try:
+        os.rename(src, dst)
+
+        if os.path.exists(src + ".note"):
+            os.rename(src + ".note", dst + ".note")
+
+        if os.path.exists(src + ".metadata_cache.json"):
+            os.remove(src + ".metadata_cache.json")
+
+        old_base_name = os.path.basename(old_name_path)
+        new_base_name_for_thumb = os.path.basename(new_name_base)
+        for thumb_file in os.listdir(THUMBNAILS_DIR):
+            if thumb_file.startswith(old_base_name):
+                new_thumb_name = thumb_file.replace(old_base_name, new_base_name_for_thumb, 1)
+                os.rename(os.path.join(THUMBNAILS_DIR, thumb_file), os.path.join(THUMBNAILS_DIR, new_thumb_name))
+
+        new_full_path = os.path.relpath(dst, UPLOAD_DIR).replace("\\", "/")
+        return jsonify(message="Soubor úspěšně přejmenován.", new_path=new_full_path)
+
+    except Exception as e:
+        print(f"!!! KRITICKÁ CHYBA BĚHEM PŘEJMENOVÁNÍ: {e} !!!")
+        if os.path.exists(dst) and not os.path.exists(src):
+            os.rename(dst, src)
+        return jsonify(error=f"Chyba na serveru při přejmenování: {e}"), 500
 
 @app.route('/save_note/', methods=['POST'])
 def save_note():
-    file_path, note = request.form.get('file_path'), request.form.get('note')
+    file_path = request.form.get('file_path')
+    plate_index = request.form.get('plate_index')
+    note = request.form.get('note')
     note_path = os.path.join(UPLOAD_DIR, file_path) + ".note"
-    os.makedirs(os.path.dirname(note_path), exist_ok=True)
-    with open(note_path, "w", encoding="utf-8") as f: f.write(note)
+    notes = {}
+    if os.path.exists(note_path):
+        with open(note_path, 'r', encoding='utf-8') as f:
+            try: notes = json.load(f)
+            except json.JSONDecodeError: pass 
+    notes[f"plate_{plate_index}"] = note
+    with open(note_path, "w", encoding="utf-8") as f: json.dump(notes, f, ensure_ascii=False, indent=4)
+    cache_path = os.path.join(UPLOAD_DIR, file_path) + ".metadata_cache.json"
+    if os.path.exists(cache_path): os.remove(cache_path)
     return jsonify(message="Poznámka uložena")
 
 @app.route('/get_note/')
 def get_note():
     file_path = request.args.get('file_path')
+    plate_index = request.args.get('plate_index')
     note_path = os.path.join(UPLOAD_DIR, file_path) + ".note"
     if os.path.exists(note_path):
-        with open(note_path, encoding="utf-8") as f: return jsonify(note=f.read())
+        with open(note_path, 'r', encoding="utf-8") as f:
+            try:
+                notes = json.load(f)
+                return jsonify(note=notes.get(f"plate_{plate_index}", ""))
+            except json.JSONDecodeError: return jsonify(note="")
     return jsonify(note="")
 
 @app.route('/delete_file/', methods=['POST'])
@@ -393,33 +502,44 @@ def delete_file():
     file_path = os.path.join(UPLOAD_DIR, filename)
     if os.path.isfile(file_path):
         os.remove(file_path)
-        note_path = file_path + ".note"
-        if os.path.exists(note_path): os.remove(note_path)
+        for ext in [".note", ".metadata_cache.json"]:
+            if os.path.exists(file_path + ext): os.remove(file_path + ext)
+        base_name = os.path.basename(filename)
+        for thumb_file in os.listdir(THUMBNAILS_DIR):
+            if thumb_file.startswith(base_name):
+                os.remove(os.path.join(THUMBNAILS_DIR, thumb_file))
         return jsonify(message="Soubor smazán")
     return jsonify(error="Soubor neexistuje"), 404
 
+@app.route('/delete_multiple_files/', methods=['POST'])
+def delete_multiple_files():
+    files_to_delete = request.json.get('filenames', [])
+    deleted_count = 0
+    errors = []
+    for filename in files_to_delete:
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        if os.path.isfile(file_path):
+            try:
+                os.remove(file_path)
+                for ext in [".note", ".metadata_cache.json"]:
+                    if os.path.exists(file_path + ext): os.remove(file_path + ext)
+                base_name = os.path.basename(filename)
+                for thumb_file in os.listdir(THUMBNAILS_DIR):
+                    if thumb_file.startswith(base_name):
+                        os.remove(os.path.join(THUMBNAILS_DIR, thumb_file))
+                deleted_count += 1
+            except Exception as e:
+                errors.append(f"Chyba při mazání souboru {filename}: {e}")
+        else:
+            errors.append(f"Soubor {filename} neexistuje.")
+    if errors:
+        return jsonify(message=f"Smazáno {deleted_count} souborů, ale vyskytly se chyby.", errors=errors), 500
+    return jsonify(message=f"Úspěšně smazáno {deleted_count} souborů.")
+
 @app.route('/disk_usage/')
 def disk_usage():
-    usage = psutil.disk_usage('.').percent
+    usage = psutil.disk_usage(UPLOAD_DIR).percent
     return jsonify(disk_usage_percent=usage)
-
-@app.route('/file_metadata/')
-def file_metadata():
-    file_path = request.args.get('file_path')
-    abs_path = os.path.join(UPLOAD_DIR, file_path)
-    if not os.path.isfile(abs_path):
-        return jsonify(error="Soubor nenalezen"), 404
-    return jsonify(get_all_metadata(abs_path))
-
-# --- NOVÁ ROUTE PRO DETAIL SOUBORU ---
-@app.route('/file_detail/<path:filepath>')
-def file_detail_route(filepath):
-    abs_path = os.path.join(UPLOAD_DIR, filepath)
-    if not os.path.isfile(abs_path):
-        return "Soubor nenalezen", 404
-    
-    metadata = get_all_metadata(abs_path)
-    return render_template('file_detail.html', data=metadata)
 
 @app.route('/thumbnails/<path:filename>')
 def serve_thumbnail(filename):

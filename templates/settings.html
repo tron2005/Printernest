@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <title>Nastavení</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+</head>
+<body>
+    <div class="container my-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">← Zpět na tiskárny</a>
+            <h3 class="mb-0">Nastavení aplikace</h3>
+            <div></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                Kalkulace ceny tisku
+            </div>
+            <div class="card-body">
+                <form method="POST" action="/settings/save">
+                    <div class="mb-3">
+                        <label for="filament_price" class="form-label">Cena za 1 kg filamentu (v Kč)</label>
+                        <input type="number" class="form-control" id="filament_price" name="filament_price" value="{{ current_config.filament_price_per_kg }}" step="0.01">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Uložit nastavení</button>
+                </form>
+            </div>
+        </div>
+        
+        <div class="card mt-4">
+            <div class="card-header">
+                Správa aplikace
+            </div>
+            <div class="card-body">
+                <p>Smazání cache souborů může opravit problémy se zobrazováním metadat po ruční úpravě souborů.</p>
+                <button class="btn btn-warning" onclick="clearCache()">Smazat cache metadat</button>
+            </div>
+        </div>
+    </div>
+<script>
+    async function clearCache() {
+        if (confirm("Opravdu chcete smazat celou cache metadat? Při příštím načtení se budou data generovat znovu.")) {
+            const response = await fetch('/clear_cache', { method: 'POST' });
+            const result = await response.json();
+            alert(result.message || result.error);
+        }
+    }
+</script>
+</body>
+</html>
