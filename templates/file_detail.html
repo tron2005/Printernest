@@ -6,9 +6,8 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
     <style>
         body { background-color: #f8f9fa; }
-        .container { max-width: 1140px; }
-        .main-preview-image { max-width: 100%; max-height: 450px; object-fit: contain; border-radius: .5rem; background-color: #e9ecef; border: 1px solid #dee2e6; }
-        .metadata-card { font-size: 0.9rem; }
+        .main-preview-image { max-width: 100%; max-height: 500px; object-fit: contain; border-radius: .5rem; background-color: #e9ecef; border: 1px solid #dee2e6; }
+        .metadata-card { font-size: 0.9rem; height: 100%; }
         .metadata-card .list-group-item { background-color: transparent; border-color: rgba(0,0,0,.075); padding: 0.75rem 1rem; }
         .metadata-card strong { display: inline-block; width: 150px; color: #6c757d; }
         .plates-header { border-bottom: 2px solid #0d6efd; padding-bottom: 10px; margin-bottom: 20px; }
@@ -18,83 +17,110 @@
         .plate-thumbnail.active { border: 2px solid #0d6efd; box-shadow: 0 .5rem 1rem rgba(0,0,0,.15); }
         .plate-name { font-size: 0.8rem; color: #6c757d; margin-top: 5px; font-weight: 500; }
         .filament-color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.2); margin-right: 8px; vertical-align: middle; }
+        .note-content { 
+            font-size: 0.85rem; 
+            background-color: #eef2f7; 
+            border-left: 4px solid #0d6efd; 
+            padding: 10px 15px;
+            white-space: pre-wrap;
+        }
+        .note-placeholder { color: #6c757d; font-style: italic; }
+        .note-wrapper {
+            height: 100%;
+            overflow-y: auto;
+        }
     </style>
 </head>
 <body>
-    <div class="container my-4">
+    <div class="container-fluid my-4 px-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <a href="{{ url_for('list_root_files') }}" class="btn btn-outline-secondary">← Zpět na soubory</a>
             <h3 class="mb-0 text-truncate px-3">{{ data.filename }}</h3>
             <a href="/download/{{ data.full_path }}" class="btn btn-primary">Stáhnout soubor</a>
         </div>
 
-        <div class="row g-4">
-            <div class="col-lg-5 text-center">
-                <h4 class="mb-3" id="plate-title"></h4>
-                {% if data.plates and data.plates[0].thumbnail %}
-                    <img src="{{ data.plates[0].thumbnail }}" alt="Hlavní náhled" id="mainPreviewImage" class="main-preview-image shadow-sm">
-                {% else %}
-                    <div class="main-preview-image d-flex align-items-center justify-content-center text-muted">Bez náhledu</div>
-                {% endif %}
+        <div class="row g-4 align-items-stretch">
+            <div class="col-lg-5 d-flex flex-column">
+                <div class="text-center flex-grow-1">
+                    <h4 class="mb-3" id="plate-title"></h4>
+                    {% if data.plates and data.plates[0].thumbnail %}
+                        <img src="{{ data.plates[0].thumbnail }}" alt="Hlavní náhled" id="mainPreviewImage" class="main-preview-image shadow-sm">
+                    {% else %}
+                        <div class="main-preview-image d-flex align-items-center justify-content-center text-muted">Bez náhledu</div>
+                    {% endif %}
+                </div>
             </div>
-            <div class="col-lg-7">
-                <div class="card metadata-card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        Informace o tisku
-                        <button class="btn btn-sm btn-outline-secondary" onclick="editNote()">✏️ Poznámka</button>
+
+            <div class="col-lg-7 d-flex flex-column">
+                <div class="row g-4">
+                    <div class="col-md-4">
+                        <div class="card metadata-card">
+                            <div class="card-header">Celkové shrnutí</div>
+                            <ul class="list-group list-group-flush">
+                                <li class="list-group-item"><strong>🕒 Doba tisku:</strong> <span id="detail-print_time"></span></li>
+                                <li class="list-group-item"><strong>⚖️ Hmotnost:</strong> <span id="detail-weight"></span></li>
+                                <li class="list-group-item"><strong>↔️ Délka:</strong> <span id="detail-filament_length"></span></li>
+                                <li class="list-group-item"><strong>💰 Cena:</strong> <span id="detail-print_cost"></span></li>
+                                <li class="list-group-item d-flex"><strong>🧵 Filamenty:</strong> <div id="detail-filaments_used" class="ms-2"></div></li>
+                            </ul>
+                        </div>
                     </div>
-                    <ul class="list-group list-group-flush">
-                        <li class="list-group-item"><strong>🕒 Doba tisku:</strong> <span id="detail-print_time"></span></li>
-                        <li class="list-group-item"><strong>⚖️ Hmotnost:</strong> <span id="detail-weight"></span></li>
-                        <li class="list-group-item"><strong>↔️ Délka filamentu:</strong> <span id="detail-filament_length"></span></li>
-                        <li class="list-group-item"><strong>💰 Cena tisku:</strong> <span id="detail-print_cost"></span></li>
-                        <li class="list-group-item"><strong>🧵 Typ filamentu:</strong> <span id="detail-filament_type"></span></li>
-                    </ul>
+                    <div class="col-md-4">
+                        <div class="card metadata-card">
+                            <div class="card-header">Technické detaily</div>
+                            <ul class="list-group list-group-flush">
+                                <li class="list-group-item"><strong>📏 Výška vrstvy:</strong> <span id="detail-layer_height"></span></li>
+                                <li class="list-group-item"><strong>📏 1. vrstva:</strong> <span id="detail-initial_layer_height"></span></li>
+                                <li class="list-group-item"><strong>겹 Počet vrstev:</strong> <span id="detail-layers"></span></li>
+                                <li class="list-group-item"><strong>🔥 Tryska:</strong> <span id="detail-nozzle_temp"></span></li>
+                                <li class="list-group-item"><strong>🌡️ Podložka:</strong> <span id="detail-bed_temp"></span></li>
+                                <li class="list-group-item"><strong>📋 Typ podložky:</strong> <span id="detail-plate_type"></span></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card metadata-card">
+                            <div class="card-header">Výplň & Podpěry</div>
+                            <ul class="list-group list-group-flush">
+                                <li class="list-group-item"><strong>🧱 Stěny:</strong> <span id="detail-wall_loops"></span></li>
+                                <li class="list-group-item"><strong>🏁 Vzor výplně:</strong> <span id="detail-infill_pattern"></span></li>
+                                <li class="list-group-item"><strong>% Hustota:</strong> <span id="detail-infill_density"></span></li>
+                                <li class="list-group-item"><strong>🌲 Podpěry:</strong> <span id="detail-enable_support"></span></li>
+                                <li class="list-group-item"><strong>🌳 Typ podpěr:</strong> <span id="detail-support_type"></span></li>
+                                <li class="list-group-item"><strong>🛏️ Okraj:</strong> <span id="detail-brim_type"></span></li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="card metadata-card mt-4">
-                    <div class="card-header">Technické detaily</div>
-                    <ul class="list-group list-group-flush">
-                        <li class="list-group-item"><strong>📏 Výška vrstvy:</strong> <span id="detail-layer_height"></span></li>
-                        <li class="list-group-item"><strong>📏 První vrstva:</strong> <span id="detail-initial_layer_height"></span></li>
-                        <li class="list-group-item"><strong>겹 Počet vrstev:</strong> <span id="detail-layers"></span></li>
-                        <li class="list-group-item"><strong>🔥 Teplota trysky:</strong> <span id="detail-nozzle_temp"></span></li>
-                        <li class="list-group-item"><strong>🌡️ Teplota podložky:</strong> <span id="detail-bed_temp"></span></li>
-                        <li class="list-group-item"><strong>📋 Typ podložky:</strong> <span id="detail-plate_type"></span></li>
-                        <li class="list-group-item"><strong>🖨️ Model tiskárny:</strong> <span>{{ data.global_info.printer_model or 'N/A' }}</span></li>
-                    </ul>
-                </div>
-
-                <div class="card metadata-card mt-4">
-                    <div class="card-header">Výplň & Stěny</div>
-                    <ul class="list-group list-group-flush">
-                        <li class="list-group-item"><strong>🧱 Počet stěn:</strong> <span id="detail-wall_loops"></span></li>
-                        <li class="list-group-item"><strong>🏁 Vzor výplně:</strong> <span id="detail-infill_pattern"></span></li>
-                        <li class="list-group-item"><strong> density Hustota výplně:</strong> <span id="detail-infill_density"></span></li>
-                    </ul>
-                </div>
-
-                <div class="card metadata-card mt-4">
-                    <div class="card-header">Podpěry & Přilnavost</div>
-                    <ul class="list-group list-group-flush">
-                        <li class="list-group-item"><strong>🌲 Podpěry zapnuty:</strong> <span id="detail-enable_support"></span></li>
-                        <li class="list-group-item"><strong>🌳 Typ podpěr:</strong> <span id="detail-support_type"></span></li>
-                        <li class="list-group-item"><strong>🛏️ Typ okraje:</strong> <span id="detail-brim_type"></span></li>
-                        <li class="list-group-item"><strong>↔️ Šířka okraje:</strong> <span id="detail-brim_width"></span></li>
-                    </ul>
+                <div class="row mt-4 flex-grow-1">
+                    <div class="col-12 h-100">
+                         <div class="card metadata-card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                Poznámka k plátu
+                                <button class="btn btn-sm btn-outline-secondary" onclick="editNote()">✏️ Upravit</button>
+                            </div>
+                            <div class="card-body py-2">
+                                <div class="note-wrapper">
+                                    <div id="detail-note-content"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
 
-
-        {% if data.plates and data.plates|length > 0 %}
-        <div class="mt-5">
+        {% if data.plates and data.plates|length > 1 %}
+        <div class="mt-4">
             <h4 class="plates-header">Tiskové pláty ({{ data.plates|length }})</h4>
             <div class="row g-3" id="platesContainer">
                 {% for plate in data.plates %}
-                <div class="col-6 col-sm-4 col-md-3 col-lg-2 plate-item">
-                    <img src="{{ plate.thumbnail }}" alt="Plát {{ plate.plate_index }}" class="plate-thumbnail {% if loop.first %}active{% endif %}" onclick="changePlateView({{ loop.index0 }})">
-                    <div class="plate-name">{{ plate.plate_name }}</div>
+                <div class="col-auto">
+                    <div class="plate-item">
+                        <img src="{{ plate.thumbnail }}" alt="Plát {{ plate.plate_index }}" class="plate-thumbnail {% if loop.first %}active{% endif %}" onclick="changePlateView({{ loop.index0 }})">
+                        <div class="plate-name">{{ plate.plate_name }}</div>
+                    </div>
                 </div>
                 {% endfor %}
             </div>
@@ -110,31 +136,51 @@
             document.getElementById('mainPreviewImage').src = plateData.thumbnail || '';
             document.getElementById('plate-title').textContent = plateData.plate_name || 'N/A';
             
-            // Informace o tisku
+            const noteContentDiv = document.getElementById('detail-note-content');
+            if (plateData.note && plateData.note.trim() !== '') {
+                noteContentDiv.className = 'note-content';
+                noteContentDiv.textContent = plateData.note;
+            } else {
+                noteContentDiv.className = 'note-placeholder';
+                noteContentDiv.textContent = 'K tomuto plátu nebyla přidána poznámka.';
+            }
+
+            const filamentsSpan = document.getElementById('detail-filaments_used');
+            filamentsSpan.innerHTML = ''; 
+            if (plateData.filaments_used && plateData.filaments_used.length > 0) {
+                plateData.filaments_used.forEach(filament => {
+                    const filamentHTML = `
+                        <div class="d-flex align-items-center mb-1">
+                            <span class="filament-color-dot me-2" style="background-color:#${filament.color};"></span>
+                            <span class="me-auto">${filament.type}</span>
+                            <small class="text-muted">${filament.weight}g / ${filament.length}m</small>
+                        </div>
+                    `;
+                    filamentsSpan.innerHTML += filamentHTML;
+                });
+            } else {
+                filamentsSpan.textContent = 'N/A';
+            }
+
             document.getElementById('detail-print_time').textContent = plateData.print_time || 'N/A';
             document.getElementById('detail-weight').textContent = plateData.weight ? `${plateData.weight} g` : 'N/A';
             document.getElementById('detail-print_cost').textContent = plateData.print_cost || 'N/A';
             document.getElementById('detail-filament_length').textContent = plateData.filament_length ? `${plateData.filament_length} m` : 'N/A';
-            document.getElementById('detail-filament_type').textContent = plateData.filament_type || 'N/A';
-
-            // Technické detaily
+            
             document.getElementById('detail-layer_height').textContent = plateData.layer_height ? `${plateData.layer_height} mm` : 'N/A';
             document.getElementById('detail-initial_layer_height').textContent = plateData.initial_layer_print_height ? `${plateData.initial_layer_print_height} mm` : 'N/A';
             document.getElementById('detail-layers').textContent = plateData.layers || 'N/A';
-            document.getElementById('detail-nozzle_temp').textContent = plateData.nozzle_temp_initial ? `${plateData.nozzle_temp_initial} °C / ${plateData.nozzle_temp_other || plateData.nozzle_temp_initial} °C` : 'N/A';
-            document.getElementById('detail-bed_temp').textContent = plateData.bed_temp_initial ? `${plateData.bed_temp_initial} °C / ${plateData.bed_temp_other || plateData.bed_temp_initial} °C` : 'N/A';
+            document.getElementById('detail-nozzle_temp').textContent = plateData.nozzle_temp_initial ? `${plateData.nozzle_temp_initial}°/${plateData.nozzle_temp_other || plateData.nozzle_temp_initial}°` : 'N/A';
+            document.getElementById('detail-bed_temp').textContent = plateData.bed_temp_initial ? `${plateData.bed_temp_initial}°/${plateData.bed_temp_other || plateData.bed_temp_initial}°` : 'N/A';
             document.getElementById('detail-plate_type').textContent = plateData.plate_type || 'N/A';
             
-            // Výplň & Stěny
             document.getElementById('detail-wall_loops').textContent = plateData.wall_loops || 'N/A';
             document.getElementById('detail-infill_pattern').textContent = plateData.sparse_infill_pattern || 'N/A';
             document.getElementById('detail-infill_density').textContent = plateData.sparse_infill_density || 'N/A';
             
-            // Podpěry & Přilnavost
             document.getElementById('detail-enable_support').textContent = plateData.enable_support || 'N/A';
             document.getElementById('detail-support_type').textContent = plateData.support_type || 'N/A';
             document.getElementById('detail-brim_type').textContent = plateData.brim_type || 'N/A';
-            document.getElementById('detail-brim_width').textContent = plateData.brim_width > 0 ? `${plateData.brim_width} mm` : 'Žádný';
         }
 
         function changePlateView(plateIndex) {
@@ -157,8 +203,13 @@
                 formData.append('file_path', '{{ data.full_path }}');
                 formData.append('plate_index', currentPlate.plate_index);
                 formData.append('note', newNote);
-                await fetch('/save_note/', { method: 'POST', body: formData });
-                currentPlate.note = newNote;
+                const response = await fetch('/save_note/', { method: 'POST', body: formData });
+                if (response.ok) {
+                    currentPlate.note = newNote;
+                    updateMetadata(currentPlate);
+                } else {
+                    alert("Chyba při ukládání poznámky.");
+                }
             }
         }
         

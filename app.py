@@ -139,36 +139,53 @@ def get_full_metadata(abs_path):
                     gcode_file_name = gcode_files[i-1]
                     gcode_params = parse_gcode_header_params(StringIO(zf.read(gcode_file_name).decode('utf-8', 'ignore')))
 
-                weight_str = plate_meta.get('weight') or gcode_params.get('total filament weight [g]')
                 time_from_gcode = gcode_params.get('model printing time')
                 time_from_xml = seconds_to_hms(plate_meta.get('prediction'))
-                filament_length_mm_str = gcode_params.get('total filament length [mm]')
                 final_print_time = time_from_xml or time_from_gcode
-                
-                # Logika pro teplotu trysky (ponechána, protože fungovala)
+
                 nozzle_temp_initial_str = str(gcode_params.get('nozzle_temperature_initial_layer') or gcode_params.get('nozzle_temperature', '0')).split(',')[0]
                 nozzle_temp_other_str = str(gcode_params.get('nozzle_temperature', nozzle_temp_initial_str)).split(',')[0]
 
-                # Logika pro teplotu podložky (rozšířená o nalezené klíče)
-                bed_temp_initial_val = (gcode_params.get('textured_plate_temp_initial_layer') or 
-                                        gcode_params.get('hot_plate_temp_initial_layer') or 
-                                        gcode_params.get('cool_plate_temp_initial_layer') or
-                                        gcode_params.get('bed_temperature_initial_layer'))
-                                        
-                bed_temp_other_val = (gcode_params.get('textured_plate_temp') or 
-                                      gcode_params.get('hot_plate_temp') or 
-                                      gcode_params.get('cool_plate_temp') or
-                                      gcode_params.get('bed_temperature'))
-
+                bed_temp_initial_val = (gcode_params.get('textured_plate_temp_initial_layer') or gcode_params.get('hot_plate_temp_initial_layer') or gcode_params.get('cool_plate_temp_initial_layer') or gcode_params.get('bed_temperature_initial_layer'))
+                bed_temp_other_val = (gcode_params.get('textured_plate_temp') or gcode_params.get('hot_plate_temp') or gcode_params.get('cool_plate_temp') or gcode_params.get('bed_temperature'))
                 bed_temp_initial_str = str(bed_temp_initial_val or bed_temp_other_val or '0').split(',')[0]
                 bed_temp_other_str = str(bed_temp_other_val or bed_temp_initial_str).split(',')[0]
                 
+                filaments_used = []
+                types = gcode_params.get('filament_type', '').split(';')
+                colors = gcode_params.get('filament_colour', '').split(';')
+                weights_list = gcode_params.get('total filament weight [g]', '').split(',')
+                lengths_list = gcode_params.get('total filament length [mm]', '').split(',')
+                
+                total_weight = 0
+                total_length_mm = 0
+                
+                num_filaments = len(types)
+                if num_filaments > 0 and types[0]:
+                    for f_idx in range(num_filaments):
+                        try:
+                            weight = float(weights_list[f_idx]) if f_idx < len(weights_list) else 0
+                            length_mm = float(lengths_list[f_idx]) if f_idx < len(lengths_list) else 0
+                        except (ValueError, IndexError):
+                            weight = 0
+                            length_mm = 0
+                        
+                        total_weight += weight
+                        total_length_mm += length_mm
+                        
+                        filaments_used.append({
+                            "type": types[f_idx] if f_idx < len(types) else 'N/A',
+                            "color": colors[f_idx].strip('#') if f_idx < len(colors) else 'AAAAAA',
+                            "weight": f"{weight:.2f}",
+                            "length": f"{length_mm / 1000:.2f}"
+                        })
+
                 final_plate_data = {
                     "plate_index": i, "plate_name": plate_meta.get("name") or f"Plát {i}",
                     "thumbnail": f"/thumbnails/{base_filename}_plate_{i}.png", "note": notes.get(f"plate_{i}", ""),
                     "print_time": final_print_time,
-                    "weight": float(weight_str) if weight_str else None,
-                    "filament_length": f"{float(filament_length_mm_str)/1000:.2f}" if filament_length_mm_str else None,
+                    "weight": f"{total_weight:.2f}" if total_weight > 0 else None,
+                    "filament_length": f"{total_length_mm / 1000:.2f}" if total_length_mm > 0 else None,
                     "nozzle_diameter": float(gcode_params.get('nozzle_diameter', 0)),
                     "layer_height": float(gcode_params.get('layer_height', 0)),
                     "layers": int(gcode_params.get('total layer number', 0)),
@@ -177,8 +194,7 @@ def get_full_metadata(abs_path):
                     "nozzle_temp_initial": int(float(nozzle_temp_initial_str)),
                     "nozzle_temp_other": int(float(nozzle_temp_other_str)),
                     "plate_type": gcode_params.get('curr_bed_type', 'N/A').replace('_', ' ').title(),
-                    "filament": filaments_map.get(plate_meta.get('filament_id')),
-                    "filament_type": gcode_params.get('filament_type', 'N/A').split(';')[0],
+                    "filaments_used": filaments_used,
                     "initial_layer_print_height": float(gcode_params.get('initial_layer_print_height', 0)),
                     "wall_loops": int(gcode_params.get('wall_loops', 0)),
                     "sparse_infill_pattern": gcode_params.get('sparse_infill_pattern', 'N/A'),
@@ -188,8 +204,8 @@ def get_full_metadata(abs_path):
                     "brim_type": gcode_params.get('brim_type', 'none').replace('_', ' ').title(),
                     "brim_width": int(gcode_params.get('brim_width', 0))
                 }
-                if final_plate_data['weight']:
-                    cost = (final_plate_data['weight'] / 1000) * CONFIG["filament_price_per_kg"]
+                if total_weight > 0:
+                    cost = (total_weight / 1000) * CONFIG["filament_price_per_kg"]
                     final_plate_data['print_cost'] = f"{cost:.2f} Kč"
                 data["plates"].append(final_plate_data)
     return data
